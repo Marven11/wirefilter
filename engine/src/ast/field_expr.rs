@@ -1598,7 +1598,7 @@ mod tests {
 
         let headers = LhsValue::from({
             let mut map = TypedMap::new();
-            map.insert(b"host".to_vec().into(), "example.org");
+            map.insert(b"host".to_vec(), "example.org");
             map
         });
 
@@ -1607,7 +1607,7 @@ mod tests {
 
         let headers = LhsValue::from({
             let mut map = TypedMap::new();
-            map.insert(b"host".to_vec().into(), "abc.net.au");
+            map.insert(b"host".to_vec(), "abc.net.au");
             map
         });
 
@@ -2198,9 +2198,9 @@ mod tests {
 
         let headers = LhsValue::from({
             let mut map = TypedMap::new();
-            map.insert(b"0".to_vec().into(), "one");
-            map.insert(b"1".to_vec().into(), "two");
-            map.insert(b"2".to_vec().into(), "three");
+            map.insert(b"0".to_vec(), "one");
+            map.insert(b"1".to_vec(), "two");
+            map.insert(b"2".to_vec(), "three");
             map
         });
         ctx.set_field_value(field("http.headers"), headers).unwrap();
@@ -2279,9 +2279,9 @@ mod tests {
 
         let headers = LhsValue::from({
             let mut map = TypedMap::new();
-            map.insert(b"0".to_vec().into(), "one");
-            map.insert(b"1".to_vec().into(), "two");
-            map.insert(b"2".to_vec().into(), "three");
+            map.insert(b"0".to_vec(), "one");
+            map.insert(b"1".to_vec(), "two");
+            map.insert(b"2".to_vec(), "three");
             map
         });
         ctx.set_field_value(field("http.headers"), headers).unwrap();

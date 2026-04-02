@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use wirefilter::{ExecutionContext, Scheme, TypedMap};
 
@@ -22,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let mut typed_map: TypedMap<'_, &str> = TypedMap::new();
         for (k, v) in &headers {
-            typed_map.insert(Cow::Borrowed(k.as_bytes()), *v);
+            typed_map.insert(k.as_bytes(), *v);
         }
 
         let mut ctx = ExecutionContext::new(&scheme);

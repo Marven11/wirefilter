@@ -527,8 +527,8 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, V> {
 
     /// Push an element to the back of the map
     #[inline]
-    pub fn insert(&mut self, key: Cow<'a, [u8]>, value: V) {
-        self.as_map_mut().insert(key, value.into_value());
+    pub fn insert(&mut self, key: impl Into<Cow<'a, [u8]>>, value: V) {
+        self.as_map_mut().insert(key.into(), value.into_value());
     }
 
     /// Returns the number of elements in the array
@@ -655,10 +655,10 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, TypedMap<'a, V>> {
     /// Returns a mutable reference to the value coressponding to the key or insert a new one.
     pub fn get_or_insert(
         &mut self,
-        key: Cow<'a, [u8]>,
+        key: impl Into<Cow<'a, [u8]>>,
         value: TypedMap<'a, V>,
     ) -> &mut TypedMap<'a, V> {
-        match self.as_map_mut().entry(key).or_insert(value.into_value()) {
+        match self.as_map_mut().entry(key.into()).or_insert(value.into_value()) {
             LhsValue::Map(map) => {
                 // Safety: this is safe because `TypedMap` is a repr(transparent)
                 // newtype over `InnerMap`.
@@ -705,10 +705,10 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, TypedArray<'a, V>> {
     /// Returns a mutable reference to the value coressponding to the key or insert a new one.
     pub fn get_or_insert(
         &mut self,
-        key: Cow<'a, [u8]>,
+        key: impl Into<Cow<'a, [u8]>>,
         value: TypedArray<'a, V>,
     ) -> &mut TypedArray<'a, V> {
-        match self.as_map_mut().entry(key).or_insert(value.into_value()) {
+        match self.as_map_mut().entry(key.into()).or_insert(value.into_value()) {
             LhsValue::Array(array) => {
                 // Safety: this is safe because `TypedArray` is a repr(transparent)
                 // newtype over `InnerArray`.
@@ -736,7 +736,7 @@ mod tests {
     fn test_borrowed_eq_owned() {
         let mut map = TypedMap::new();
 
-        map.insert(Cow::Owned("key".as_bytes().to_vec()), "borrowed");
+        map.insert("key".as_bytes().to_vec(), "borrowed");
 
         let owned = Map::from(map);
 
