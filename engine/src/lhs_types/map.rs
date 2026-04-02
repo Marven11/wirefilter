@@ -13,8 +13,8 @@ use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
 pub(crate) enum InnerMap<'a> {
-    Owned(BTreeMap<Box<[u8]>, LhsValue<'a>>),
-    Borrowed(&'a BTreeMap<Box<[u8]>, LhsValue<'a>>),
+    Owned(BTreeMap<Cow<'a, [u8]>, LhsValue<'a>>),
+    Borrowed(&'a BTreeMap<Cow<'a, [u8]>, LhsValue<'a>>),
 }
 
 impl<'a> InnerMap<'a> {
@@ -110,13 +110,13 @@ impl<'a> Map<'a> {
             data: match self.data {
                 InnerMap::Owned(map) => InnerMap::Owned(
                     map.into_iter()
-                        .map(|(key, val)| (key, val.into_owned()))
-                        .collect(),
+                        .map(|(key, val)| (Cow::Owned(key.into_owned()), val.into_owned()))
+                        .collect::<BTreeMap<Cow<'static, [u8]>, LhsValue<'static>>>(),
                 ),
                 InnerMap::Borrowed(map) => InnerMap::Owned(
                     map.iter()
-                        .map(|(key, value)| (key.clone(), value.clone().into_owned()))
-                        .collect(),
+                        .map(|(key, value)| (Cow::Owned(key.to_vec()), value.clone().into_owned()))
+                        .collect::<BTreeMap<Cow<'static, [u8]>, LhsValue<'static>>>(),
                 ),
             },
         }
@@ -168,7 +168,7 @@ impl<'a> Map<'a> {
     /// Creates a new map from the specified iterator.
     pub fn try_from_iter<E: From<TypeMismatchError>, V: Into<LhsValue<'a>>>(
         val_type: impl Into<CompoundType>,
-        iter: impl IntoIterator<Item = Result<(Box<[u8]>, V), E>>,
+        iter: impl IntoIterator<Item = Result<(Cow<'a, [u8]>, V), E>>,
     ) -> Result<Self, E> {
         let val_type = val_type.into();
         iter.into_iter()
@@ -232,7 +232,7 @@ impl Hash for Map<'_> {
 }
 
 /// An iterator over the entries of a Map.
-pub struct MapIter<'a, 'b>(std::collections::btree_map::Iter<'b, Box<[u8]>, LhsValue<'a>>);
+pub struct MapIter<'a, 'b>(std::collections::btree_map::Iter<'b, Cow<'a, [u8]>, LhsValue<'a>>);
 
 impl<'a, 'b> Iterator for MapIter<'a, 'b> {
     type Item = (&'b [u8], &'b LhsValue<'a>);
@@ -256,8 +256,8 @@ impl ExactSizeIterator for MapIter<'_, '_> {
 }
 
 pub enum MapValuesIntoIter<'a> {
-    Owned(std::collections::btree_map::IntoIter<Box<[u8]>, LhsValue<'a>>),
-    Borrowed(AsRefIterator<'a, std::collections::btree_map::Values<'a, Box<[u8]>, LhsValue<'a>>>),
+    Owned(std::collections::btree_map::IntoIter<Cow<'a, [u8]>, LhsValue<'a>>),
+    Borrowed(AsRefIterator<'a, std::collections::btree_map::Values<'a, Cow<'a, [u8]>, LhsValue<'a>>>),
 }
 
 impl<'a> Iterator for MapValuesIntoIter<'a> {
@@ -288,8 +288,8 @@ impl ExactSizeIterator for MapValuesIntoIter<'_> {
 }
 
 enum MapIntoIterImpl<'a> {
-    Owned(std::collections::btree_map::IntoIter<Box<[u8]>, LhsValue<'a>>),
-    Borrowed(std::collections::btree_map::Iter<'a, Box<[u8]>, LhsValue<'a>>),
+    Owned(std::collections::btree_map::IntoIter<Cow<'a, [u8]>, LhsValue<'a>>),
+    Borrowed(std::collections::btree_map::Iter<'a, Cow<'a, [u8]>, LhsValue<'a>>),
 }
 
 pub struct MapIntoIter<'a>(MapIntoIterImpl<'a>);
@@ -300,10 +300,10 @@ impl<'a> Iterator for MapIntoIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             MapIntoIter(MapIntoIterImpl::Owned(iter)) => {
-                iter.next().map(|(k, v)| (Vec::from(k).into(), v))
+                iter.next().map(|(k, v)| (k, v))
             }
             MapIntoIter(MapIntoIterImpl::Borrowed(iter)) => {
-                iter.next().map(|(k, v)| ((&**k).into(), v.as_ref()))
+                iter.next().map(|(k, v)| (k.clone(), v.as_ref()))
             }
         }
     }
@@ -446,7 +446,7 @@ impl<'de> DeserializeSeed<'de> for &mut Map<'de> {
                             value_type
                         )));
                     }
-                    map.insert(key.into_owned().into_bytes().into(), value);
+                    map.insert(Cow::Owned(key.into_owned().into_bytes()), value);
                 }
 
                 Ok(())
@@ -476,7 +476,7 @@ impl<'de> DeserializeSeed<'de> for &mut Map<'de> {
                             value_type
                         )));
                     }
-                    map.insert(key.into_owned(), value);
+                    map.insert(Cow::Owned(key.into_owned().into_vec()), value);
                 }
                 Ok(())
             }
@@ -494,7 +494,7 @@ where
     V: IntoValue<'a>,
 {
     map: InnerMap<'a>,
-    _marker: std::marker::PhantomData<BTreeMap<Box<[u8]>, V>>,
+    _marker: std::marker::PhantomData<BTreeMap<Cow<'a, [u8]>, V>>,
 }
 
 impl<'a, V: IntoValue<'a>> TypedMap<'a, V> {
@@ -510,7 +510,7 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, V> {
     }
 
     #[inline]
-    fn as_map_ref(&self) -> &BTreeMap<Box<[u8]>, LhsValue<'a>> {
+    fn as_map_ref(&self) -> &BTreeMap<Cow<'a, [u8]>, LhsValue<'a>> {
         match &self.map {
             InnerMap::Owned(map) => map,
             InnerMap::Borrowed(_) => unreachable!(),
@@ -518,7 +518,7 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, V> {
     }
 
     #[inline]
-    fn as_map_mut(&mut self) -> &mut BTreeMap<Box<[u8]>, LhsValue<'a>> {
+    fn as_map_mut(&mut self) -> &mut BTreeMap<Cow<'a, [u8]>, LhsValue<'a>> {
         match &mut self.map {
             InnerMap::Owned(map) => map,
             InnerMap::Borrowed(_) => unreachable!(),
@@ -527,7 +527,7 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, V> {
 
     /// Push an element to the back of the map
     #[inline]
-    pub fn insert(&mut self, key: Box<[u8]>, value: V) {
+    pub fn insert(&mut self, key: Cow<'a, [u8]>, value: V) {
         self.as_map_mut().insert(key, value.into_value());
     }
 
@@ -592,18 +592,18 @@ impl<'a, V: IntoValue<'a>> Default for TypedMap<'a, V> {
     }
 }
 
-impl<'a, V: IntoValue<'a>> Extend<(Box<[u8]>, V)> for TypedMap<'a, V> {
+impl<'a, V: IntoValue<'a>> Extend<(Cow<'a, [u8]>, V)> for TypedMap<'a, V> {
     #[inline]
-    fn extend<T: IntoIterator<Item = (Box<[u8]>, V)>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item = (Cow<'a, [u8]>, V)>>(&mut self, iter: T) {
         self.as_map_mut()
             .extend(iter.into_iter().map(|(k, v)| (k, v.into_value())))
     }
 }
 
-impl<'a, V: IntoValue<'a>> FromIterator<(Box<[u8]>, V)> for TypedMap<'a, V> {
+impl<'a, V: IntoValue<'a>> FromIterator<(Cow<'a, [u8]>, V)> for TypedMap<'a, V> {
     fn from_iter<T>(iter: T) -> Self
     where
-        T: IntoIterator<Item = (Box<[u8]>, V)>,
+        T: IntoIterator<Item = (Cow<'a, [u8]>, V)>,
     {
         Self {
             map: InnerMap::Owned(iter.into_iter().map(|(k, v)| (k, v.into_value())).collect()),
@@ -655,7 +655,7 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, TypedMap<'a, V>> {
     /// Returns a mutable reference to the value coressponding to the key or insert a new one.
     pub fn get_or_insert(
         &mut self,
-        key: Box<[u8]>,
+        key: Cow<'a, [u8]>,
         value: TypedMap<'a, V>,
     ) -> &mut TypedMap<'a, V> {
         match self.as_map_mut().entry(key).or_insert(value.into_value()) {
@@ -705,7 +705,7 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, TypedArray<'a, V>> {
     /// Returns a mutable reference to the value coressponding to the key or insert a new one.
     pub fn get_or_insert(
         &mut self,
-        key: Box<[u8]>,
+        key: Cow<'a, [u8]>,
         value: TypedArray<'a, V>,
     ) -> &mut TypedArray<'a, V> {
         match self.as_map_mut().entry(key).or_insert(value.into_value()) {
@@ -736,7 +736,7 @@ mod tests {
     fn test_borrowed_eq_owned() {
         let mut map = TypedMap::new();
 
-        map.insert("key".as_bytes().to_vec().into(), "borrowed");
+        map.insert(Cow::Owned("key".as_bytes().to_vec()), "borrowed");
 
         let owned = Map::from(map);
 
@@ -751,8 +751,8 @@ mod tests {
         assert_eq!(borrowed, borrowed.to_owned());
     }
 
-    fn key(s: &str) -> Box<[u8]> {
-        s.as_bytes().to_vec().into_boxed_slice()
+    fn key(s: &str) -> Cow<'static, [u8]> {
+        Cow::Owned(s.as_bytes().to_vec())
     }
 
     #[test]

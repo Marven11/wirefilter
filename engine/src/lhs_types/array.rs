@@ -638,6 +638,7 @@ impl<'a, V: IntoValue<'a>> TypedArray<'a, TypedMap<'a, V>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::borrow::Cow;
 
     #[test]
     fn test_size_of_array() {
@@ -679,8 +680,8 @@ mod tests {
         assert_eq!(*array.get(1).unwrap(), ["d", "e", "f"]);
     }
 
-    fn key(s: &str) -> Box<[u8]> {
-        s.as_bytes().to_vec().into_boxed_slice()
+    fn key(s: &str) -> Cow<'static, [u8]> {
+        Cow::Owned(s.as_bytes().to_vec())
     }
 
     #[test]
