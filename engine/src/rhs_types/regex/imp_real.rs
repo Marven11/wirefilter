@@ -1,20 +1,41 @@
-use super::Error;
-use crate::{ParserSettings, RegexFormat};
+use super::{Error, Regex, RegexBuilder};
 use regex_automata::MatchKind;
 use regex_automata::nfa::thompson::WhichCaptures;
-use std::ops::Deref;
-use std::sync::Arc;
 
-/// Wrapper around [`regex_automata::meta::Regex`]
 #[derive(Clone)]
-pub struct Regex {
-    pattern: Arc<str>,
-    regex: regex_automata::meta::Regex,
-    format: RegexFormat,
+pub(crate) struct DefaultRegex(regex_automata::meta::Regex);
+
+impl Regex for DefaultRegex {
+    #[inline]
+    fn is_match(&self, input: &[u8]) -> bool {
+        self.0.is_match(input)
+    }
+
+    fn clone_boxed(&self) -> Box<dyn Regex> {
+        Box::new(self.clone())
+    }
 }
 
-impl Regex {
-    /// Retrieves the syntax configuration that will be used to build the regex.
+/// Default regex builder using `regex_automata`.
+#[derive(Clone, Debug)]
+pub struct RegexDefaultBuilder {
+    /// Approximate size limit of the compiled regular expression.
+    pub compiled_size_limit: usize,
+    /// Approximate size of the cache used by the DFA of a regex.
+    pub dfa_size_limit: usize,
+}
+
+impl Default for RegexDefaultBuilder {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            compiled_size_limit: 10 * (1 << 20),
+            dfa_size_limit: 2 * (1 << 20),
+        }
+    }
+}
+
+impl RegexDefaultBuilder {
     #[inline]
     fn syntax_config() -> regex_automata::util::syntax::Config {
         regex_automata::util::syntax::Config::new()
@@ -22,35 +43,27 @@ impl Regex {
             .utf8(false)
     }
 
-    /// Retrieves the meta configuration that will be used to build the regex.
     #[inline]
-    fn meta_config(settings: &ParserSettings) -> regex_automata::meta::Config {
+    fn meta_config(&self) -> regex_automata::meta::Config {
         regex_automata::meta::Config::new()
             .match_kind(MatchKind::LeftmostFirst)
             .utf8_empty(false)
             .dfa(false)
-            .nfa_size_limit(Some(settings.regex_compiled_size_limit))
+            .nfa_size_limit(Some(self.compiled_size_limit))
             .onepass(false)
-            .dfa_size_limit(Some(settings.regex_compiled_size_limit))
-            .hybrid_cache_capacity(settings.regex_dfa_size_limit)
+            .dfa_size_limit(Some(self.compiled_size_limit))
+            .hybrid_cache_capacity(self.dfa_size_limit)
             .which_captures(WhichCaptures::Implicit)
     }
+}
 
-    /// Compiles a regular expression.
-    pub fn new(
-        pattern: &str,
-        format: RegexFormat,
-        settings: &ParserSettings,
-    ) -> Result<Self, Error> {
+impl RegexBuilder for RegexDefaultBuilder {
+    fn build(&self, pattern: &str) -> Result<Box<dyn Regex>, Error> {
         ::regex_automata::meta::Builder::new()
-            .configure(Self::meta_config(settings))
+            .configure(self.meta_config())
             .syntax(Self::syntax_config())
             .build(pattern)
-            .map(|regex| Regex {
-                pattern: Arc::from(pattern),
-                regex,
-                format,
-            })
+            .map(|re| Box::new(DefaultRegex(re)) as Box<dyn Regex>)
             .map_err(|err| {
                 if let Some(limit) = err.size_limit() {
                     Error::CompiledTooBig(limit)
@@ -62,44 +75,22 @@ impl Regex {
             })
     }
 
-    /// Returns the pattern of this regex.
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        &self.pattern
-    }
-
-    /// Returns the format used by the pattern.
-    #[inline]
-    pub fn format(&self) -> RegexFormat {
-        self.format
-    }
-}
-
-impl From<Regex> for regex_automata::meta::Regex {
-    #[inline]
-    fn from(regex: Regex) -> Self {
-        regex.regex
-    }
-}
-
-impl Deref for Regex {
-    type Target = regex_automata::meta::Regex;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.regex
+    fn clone_box(&self) -> Box<dyn RegexBuilder> {
+        Box::new(self.clone())
     }
 }
 
 #[test]
 fn test_compiled_size_limit() {
+    use super::{RegexExpr, RegexFormat};
+
     const COMPILED_SIZE_LIMIT: usize = 1024 * 1024;
-    let settings = ParserSettings {
-        regex_compiled_size_limit: COMPILED_SIZE_LIMIT,
+    let builder = RegexDefaultBuilder {
+        compiled_size_limit: COMPILED_SIZE_LIMIT,
         ..Default::default()
     };
     assert_eq!(
-        Regex::new(".{4079,65535}", RegexFormat::Literal, &settings),
+        RegexExpr::new(".{4079,65535}", RegexFormat::Literal, &builder),
         Err(Error::CompiledTooBig(COMPILED_SIZE_LIMIT))
     );
 }
