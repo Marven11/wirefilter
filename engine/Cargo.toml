@@ -38,6 +38,7 @@ wildcard.workspace = true
 criterion.workspace = true
 indoc.workspace = true
 serde_json.workspace = true
+regex = "1"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # By default, getrandom doesn't have any source of randomness on wasm32-unknown.

@@ -15,5 +15,10 @@ pub use self::int::IntRange;
 pub use self::ip::{ExplicitIpRange, IpCidr, IpRange};
 pub use self::list::ListName;
 pub use self::map::UninhabitedMap;
-pub use self::regex::{Error as RegexError, Regex, RegexFormat};
+pub use self::regex::{
+    Error as RegexError, Regex, RegexDefaultProvider, RegexExpr, RegexFormat, RegexProvider,
+};
 pub use self::wildcard::{Wildcard, WildcardError};
+
+#[cfg(feature = "regex")]
+pub use self::regex::RegexSettings;
