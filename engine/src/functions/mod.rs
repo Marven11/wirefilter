@@ -1,10 +1,12 @@
 pub(crate) mod all;
 pub(crate) mod any;
 pub(crate) mod concat;
+pub(crate) mod lookup;
 
 pub use self::all::AllFunction;
 pub use self::any::AnyFunction;
 pub use self::concat::ConcatFunction;
+pub use self::lookup::LookupFunction;
 use crate::ParserSettings;
 use crate::filter::CompiledValueResult;
 use crate::types::{

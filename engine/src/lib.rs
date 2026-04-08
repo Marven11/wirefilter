@@ -98,7 +98,7 @@ pub use self::filter::{
 pub use self::functions::{
     AllFunction, AnyFunction, ConcatFunction, FunctionArgInvalidConstantError, FunctionArgKind,
     FunctionArgKindMismatchError, FunctionArgs, FunctionDefinition, FunctionDefinitionContext,
-    FunctionParam, FunctionParamError, SimpleFunctionArgKind, SimpleFunctionDefinition,
+    FunctionParam, FunctionParamError, LookupFunction, SimpleFunctionArgKind, SimpleFunctionDefinition,
     SimpleFunctionImpl, SimpleFunctionOptParam, SimpleFunctionParam,
 };
 pub use self::lex::LexErrorKind;
