@@ -66,7 +66,7 @@ impl<'e, U> ExecutionContext<'e, U> {
         ExecutionContext {
             field_definitions: scheme.field_definitions().clone(),
             scheme: scheme.clone(),
-            values: vec![None; scheme.field_count()].into(),
+            values: vec![None; scheme.field_definitions().field_count()].into(),
             list_matchers: scheme
                 .lists()
                 .map(|list| list.definition().new_matcher())
@@ -152,7 +152,7 @@ impl<'e, U> ExecutionContext<'e, U> {
                 } else {
                     panic!(
                         "Field {} was registered as mandatory but not given a value",
-                        field.name()
+                        &*field.name()
                     );
                 }
             }
@@ -506,7 +506,7 @@ impl<U> Serialize for ExecutionContext<'_, U> {
         let mut map = serializer.serialize_map(Some(self.values.len()))?;
         for field in self.scheme().fields() {
             if let Some(Some(value)) = self.values.get(field.index()) {
-                map.serialize_entry(field.name(), value)?;
+                map.serialize_entry(&*field.name(), value)?;
             }
         }
 

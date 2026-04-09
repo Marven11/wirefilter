@@ -14,6 +14,7 @@ use std::convert::TryFrom;
 use std::fmt::{self, Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::iter::Iterator;
+use parking_lot::{RwLock, RwLockReadGuard, MappedRwLockReadGuard};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -131,10 +132,17 @@ impl<'i, 's> LexWith<'i, &'s Scheme> for FieldRef<'s> {
 }
 
 impl<'s> FieldRef<'s> {
+    #[inline]
+    fn field_def(&self) -> MappedRwLockReadGuard<'s, FieldDefinition> {
+        self.field_definitions.index(self.index)
+    }
+
     /// Returns the field's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
-    pub fn name(&self) -> &'s str {
-        &self.field_definitions.fields[self.index].name
+    pub fn name(&self) -> MappedRwLockReadGuard<'s, str> {
+        RwLockReadGuard::try_map(self.field_definitions.inner.read(), |inner: &FieldDefinitionsInner| inner.fields.get(self.index))
+            .map(|guard| MappedRwLockReadGuard::map(guard, |fd| &fd.name[..]))
+            .unwrap_or_else(|_| panic!("index {} out of bounds", self.index))
     }
 
     /// Get the field's index in the [`Scheme`](struct@Scheme) identifier's list.
@@ -146,7 +154,7 @@ impl<'s> FieldRef<'s> {
     /// Returns whether the field value is optional.
     #[inline]
     pub fn optional(&self) -> bool {
-        self.field_definitions.fields[self.index].optional
+        self.field_def().optional
     }
 
     /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) to which this field belongs to.
@@ -184,7 +192,7 @@ impl<'s> FieldRef<'s> {
 impl GetType for FieldRef<'_> {
     #[inline]
     fn get_type(&self) -> Type {
-        self.field_definitions.fields[self.index].ty
+        self.field_def().ty
     }
 }
 
@@ -215,10 +223,17 @@ impl Debug for Field {
 }
 
 impl Field {
+    #[inline]
+    fn field_def(&self) -> MappedRwLockReadGuard<'_, FieldDefinition> {
+        self.field_definitions.index(self.index)
+    }
+
     /// Returns the field's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
-    pub fn name(&self) -> &str {
-        &self.field_definitions.fields[self.index].name
+    pub fn name(&self) -> MappedRwLockReadGuard<'_, str> {
+        RwLockReadGuard::try_map(self.field_definitions.inner.read(), |inner: &FieldDefinitionsInner| inner.fields.get(self.index))
+            .map(|guard| MappedRwLockReadGuard::map(guard, |fd| &fd.name[..]))
+            .unwrap_or_else(|_| panic!("index {} out of bounds", self.index))
     }
 
     /// Get the field's index in the [`Scheme`](struct@Scheme) identifier's list.
@@ -230,7 +245,7 @@ impl Field {
     /// Returns whether the field value is optional.
     #[inline]
     pub fn optional(&self) -> bool {
-        self.field_definitions.fields[self.index].optional
+        self.field_def().optional
     }
 
     /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) to which this field belongs to.
@@ -252,7 +267,7 @@ impl Field {
 impl GetType for Field {
     #[inline]
     fn get_type(&self) -> Type {
-        self.field_definitions.fields[self.index].ty
+        self.field_def().ty
     }
 }
 
@@ -468,6 +483,15 @@ pub struct UnknownFunctionError;
 #[error("attempt to redefine field {0}")]
 pub struct FieldRedefinitionError(String);
 
+/// An error that occurs when a field is defined with a different type than an existing field with the same name.
+#[derive(Debug, PartialEq, Eq, Error)]
+#[error("field '{name}' type mismatch: expected {expected:?}, got {got:?}")]
+pub struct FieldTypeMismatchError {
+    name: String,
+    expected: Type,
+    got: Type,
+}
+
 /// An error that occurs when previously defined function gets redefined.
 #[derive(Debug, PartialEq, Eq, Error)]
 #[error("attempt to redefine function {0}")]
@@ -479,6 +503,10 @@ pub enum IdentifierRedefinitionError {
     /// An error that occurs when previously defined field gets redefined.
     #[error("{0}")]
     Field(#[source] FieldRedefinitionError),
+
+    /// An error that occurs when a field is defined with a different type.
+    #[error("{0}")]
+    FieldTypeMismatch(#[source] FieldTypeMismatchError),
 
     /// An error that occurs when previously defined function gets redefined.
     #[error("{0}")]
@@ -621,6 +649,7 @@ pub struct FieldDefinition {
     name: IdentifierName,
     ty: Type,
     optional: bool,
+    scheme_id: u64,
 }
 
 impl FieldDefinition {
@@ -643,17 +672,25 @@ impl FieldDefinition {
     }
 }
 
-/// A shared collection of field definitions that can be referenced by multiple schemes.
 #[derive(Debug, Clone)]
+pub(crate) struct FieldDefinitionsInner {
+    pub(crate) fields: Vec<FieldDefinition>,
+    pub(crate) field_names: HashMap<Arc<str>, usize, FnvBuildHasher>,
+    pub(crate) next_scheme_id: u64,
+}
+
+/// A shared collection of field definitions that can be referenced by multiple schemes.
+#[derive(Debug)]
 pub struct FieldDefinitions {
-    fields: Vec<FieldDefinition>,
+    inner: RwLock<FieldDefinitionsInner>,
     nil_not_equal_is_false: bool,
-    field_names: HashMap<Arc<str>, usize, FnvBuildHasher>,
 }
 
 impl PartialEq for FieldDefinitions {
     fn eq(&self, other: &Self) -> bool {
-        self.fields == other.fields && self.nil_not_equal_is_false == other.nil_not_equal_is_false
+        let a = self.inner.read();
+        let b = other.inner.read();
+        a.fields == b.fields && self.nil_not_equal_is_false == other.nil_not_equal_is_false
     }
 }
 
@@ -661,40 +698,100 @@ impl Eq for FieldDefinitions {}
 
 impl Hash for FieldDefinitions {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.fields.hash(state);
+        self.inner.read().fields.hash(state);
         self.nil_not_equal_is_false.hash(state);
     }
 }
 
 impl FieldDefinitions {
+    /// Creates a new empty `FieldDefinitions`.
+    ///
+    /// When `nil_not_equal_is_false` is `true`, comparisons with `nil` values
+    /// always return `false` instead of `nil`.
+    pub fn new(nil_not_equal_is_false: bool) -> Self {
+        FieldDefinitions {
+            inner: RwLock::new(FieldDefinitionsInner {
+                fields: Vec::new(),
+                field_names: HashMap::default(),
+                next_scheme_id: 0,
+            }),
+            nil_not_equal_is_false,
+        }
+    }
+
     /// Returns the number of fields.
     #[inline]
     pub fn field_count(&self) -> usize {
-        self.fields.len()
+        self.inner.read().fields.len()
     }
 
     /// Returns a reference to the field definition at the given index.
     #[inline]
-    pub fn get(&self, index: usize) -> Option<&FieldDefinition> {
-        self.fields.get(index)
+    pub fn get(&self, index: usize) -> Option<MappedRwLockReadGuard<'_, FieldDefinition>> {
+        RwLockReadGuard::try_map(self.inner.read(), |inner| inner.fields.get(index)).ok()
     }
 
     /// Returns the field definition at the given index (panics if out of bounds).
     #[inline]
-    pub fn index(&self, index: usize) -> &FieldDefinition {
-        &self.fields[index]
+    pub fn index(&self, index: usize) -> MappedRwLockReadGuard<'_, FieldDefinition> {
+        RwLockReadGuard::try_map(self.inner.read(), |inner| inner.fields.get(index))
+            .unwrap_or_else(|_| panic!("index {index} out of bounds"))
     }
 
     /// Returns the field index for the given name.
     #[inline]
     pub fn get_field_index(&self, name: &str) -> Option<usize> {
-        self.field_names.get(name).copied()
+        self.inner.read().field_names.get(name).copied()
     }
 
     /// Returns the nil_not_equal_behavior setting.
     #[inline]
     pub(crate) fn nil_not_equal_behavior(&self) -> bool {
         !self.nil_not_equal_is_false
+    }
+
+    /// Adds a field definition internally via write lock.
+    pub(crate) fn get_or_add_field(&self, name: Arc<str>, ty: Type, optional: bool, scheme_id: u64) -> Result<usize, IdentifierRedefinitionError> {
+        {
+            let inner = self.inner.read();
+            if let Some(&index) = inner.field_names.get(&name) {
+                let existing_ty = inner.fields[index].ty;
+                if existing_ty != ty {
+                    return Err(IdentifierRedefinitionError::FieldTypeMismatch(FieldTypeMismatchError {
+                        name: name.to_string(),
+                        expected: existing_ty,
+                        got: ty,
+                    }));
+                }
+                return Ok(index);
+            }
+        }
+        self.add_field_internal(name, ty, optional, scheme_id)
+    }
+
+    pub(crate) fn add_field_internal(&self, name: Arc<str>, ty: Type, optional: bool, scheme_id: u64) -> Result<usize, IdentifierRedefinitionError> {
+        let mut inner = self.inner.write();
+        match inner.field_names.get(&name) {
+            Some(_) => Err(IdentifierRedefinitionError::Field(FieldRedefinitionError(name.to_string()))),
+            None => {
+                let index = inner.fields.len();
+                inner.fields.push(FieldDefinition {
+                    name: name.clone(),
+                    ty,
+                    optional,
+                    scheme_id,
+                });
+                inner.field_names.insert(name, index);
+                Ok(index)
+            }
+        }
+    }
+
+    pub(crate) fn allocate_scheme_id(&self) -> u64 {
+        let mut inner = self.inner.write();
+        let id = inner.next_scheme_id;
+        inner.next_scheme_id += 1;
+        id
     }
 }
 
@@ -710,6 +807,8 @@ struct SchemeInner {
 /// A builder for a [`Scheme`].
 #[derive(Default, Debug)]
 pub struct SchemeBuilder {
+    shared_field_definitions: Option<Arc<FieldDefinitions>>,
+    scheme_id: Option<u64>,
     fields: Vec<FieldDefinition>,
     functions: Vec<(IdentifierName, Box<dyn FunctionDefinition>)>,
     items: HashMap<IdentifierName, SchemeItem, FnvBuildHasher>,
@@ -730,17 +829,15 @@ impl SchemeBuilder {
     ///
     /// The builder will use the same field definitions, allowing multiple
     /// schemes to share field data without duplication.
-    pub fn with_field_definitions(field_definitions: Arc<FieldDefinitions>) -> Self {
-        let items: HashMap<IdentifierName, SchemeItem, FnvBuildHasher> = field_definitions
-            .field_names
-            .iter()
-            .map(|(name, &index)| (name.clone(), SchemeItem::Field(index)))
-            .collect();
+    pub fn new_with_field_definitions(field_definitions: Arc<FieldDefinitions>) -> Self {
+        let scheme_id = field_definitions.allocate_scheme_id();
 
         SchemeBuilder {
-            fields: field_definitions.fields.clone(),
+            shared_field_definitions: Some(field_definitions.clone()),
+            scheme_id: Some(scheme_id),
+            fields: Vec::new(),
             functions: Vec::new(),
-            items,
+            items: HashMap::default(),
             list_types: HashMap::default(),
             lists: Vec::new(),
             nil_not_equal_is_false: field_definitions.nil_not_equal_is_false,
@@ -753,7 +850,7 @@ impl SchemeBuilder {
         ty: Type,
         optional: bool,
     ) -> Result<(), IdentifierRedefinitionError> {
-        match self.items.entry(name) {
+        match self.items.entry(name.clone()) {
             Entry::Occupied(entry) => match entry.get() {
                 SchemeItem::Field(_) => Err(IdentifierRedefinitionError::Field(
                     FieldRedefinitionError(entry.key().to_string()),
@@ -763,12 +860,19 @@ impl SchemeBuilder {
                 )),
             },
             Entry::Vacant(entry) => {
-                let index = self.fields.len();
-                self.fields.push(FieldDefinition {
-                    name: entry.key().clone(),
-                    ty,
-                    optional,
-                });
+                let index = if let Some(ref fd) = self.shared_field_definitions {
+                    let scheme_id = self.scheme_id.unwrap();
+                    fd.get_or_add_field(name, ty, optional, scheme_id)?
+                } else {
+                    let index = self.fields.len();
+                    self.fields.push(FieldDefinition {
+                        name: entry.key().clone(),
+                        ty,
+                        optional,
+                        scheme_id: 0,
+                    });
+                    index
+                };
                 entry.insert(SchemeItem::Field(index));
                 Ok(())
             }
@@ -846,21 +950,29 @@ impl SchemeBuilder {
 
     /// Build a new [`Scheme`] from this builder.
     pub fn build(self) -> Scheme {
-        let field_names: HashMap<Arc<str>, usize, FnvBuildHasher> = self.items
-            .iter()
-            .filter_map(|(name, item)| match item {
-                SchemeItem::Field(index) => Some((name.clone(), *index)),
-                SchemeItem::Function(_) => None,
+        let field_definitions = if let Some(fd) = self.shared_field_definitions {
+            fd
+        } else {
+            let field_names: HashMap<Arc<str>, usize, FnvBuildHasher> = self.items
+                .iter()
+                .filter_map(|(name, item)| match item {
+                    SchemeItem::Field(index) => Some((name.clone(), *index)),
+                    SchemeItem::Function(_) => None,
+                })
+                .collect();
+            Arc::new(FieldDefinitions {
+                inner: RwLock::new(FieldDefinitionsInner {
+                    fields: self.fields,
+                    field_names,
+                    next_scheme_id: 1,
+                }),
+                nil_not_equal_is_false: self.nil_not_equal_is_false,
             })
-            .collect();
+        };
 
         Scheme {
             inner: Arc::new(SchemeInner {
-                field_definitions: Arc::new(FieldDefinitions {
-                    fields: self.fields,
-                    nil_not_equal_is_false: self.nil_not_equal_is_false,
-                    field_names,
-                }),
+                field_definitions,
                 functions: self.functions,
                 items: self.items,
                 list_types: self.list_types,
@@ -920,10 +1032,10 @@ impl Serialize for Scheme {
         S: Serializer,
     {
         let fields = self.fields();
-        let mut map = serializer.serialize_map(Some(fields.len()))?;
+        let mut map = serializer.serialize_map(Some(self.field_count()))?;
         for f in fields {
             map.serialize_entry(
-                f.name(),
+                &*f.name(),
                 &SerdeField {
                     ty: f.get_type(),
                     optional: f.optional(),
@@ -976,15 +1088,17 @@ impl<'de> Deserialize<'de> for Scheme {
 impl<'s> Scheme {
     /// Returns the [`identifier`](enum@Identifier) with the specified `name`.
     pub(crate) fn get(&'s self, name: &str) -> Option<Identifier<'s>> {
-        self.inner.items.get(name).map(move |item| match *item {
-            SchemeItem::Field(index) => Identifier::Field(FieldRef {
-                field_definitions: &self.inner.field_definitions,
-                index,
-            }),
-            SchemeItem::Function(index) => Identifier::Function(FunctionRef {
+        self.inner.items.get(name).and_then(|item| match *item {
+            SchemeItem::Field(index) => {
+                Some(Identifier::Field(FieldRef {
+                    field_definitions: &self.inner.field_definitions,
+                    index,
+                }))
+            }
+            SchemeItem::Function(index) => Some(Identifier::Function(FunctionRef {
                 scheme: self,
                 index,
-            }),
+            })),
         })
     }
 
@@ -998,18 +1112,26 @@ impl<'s> Scheme {
 
     /// Iterates over fields registered in the [`scheme`](struct@Scheme).
     #[inline]
-    pub fn fields(&'s self) -> impl ExactSizeIterator<Item = FieldRef<'s>> + 's {
-        (0..self.inner.field_definitions.fields.len()).map(|index| FieldRef {
-            field_definitions: &self.inner.field_definitions,
+    pub fn fields(&'s self) -> impl Iterator<Item = FieldRef<'s>> + 's {
+        let fd = &self.inner.field_definitions;
+        let indices: Vec<usize> = self.inner.items.iter()
+            .filter_map(|(_, item)| match item {
+                SchemeItem::Field(index) => Some(*index),
+                SchemeItem::Function(_) => None,
+            })
+            .collect();
+        indices.into_iter().map(move |index| FieldRef {
+            field_definitions: fd,
             index,
         })
     }
 
-    /// Returns the number of fields in the [`scheme`](struct@Scheme).
+    /// Returns the number of fields owned by this [`scheme`](struct@Scheme).
     #[inline]
     pub fn field_count(&self) -> usize {
-        self.inner.field_definitions.fields.len()
+        self.inner.items.iter().filter(|(_, item)| matches!(item, SchemeItem::Field(_))).count()
     }
+
 
     /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) shared by this scheme.
     #[inline]
@@ -1951,7 +2073,7 @@ fn test_scheme_iter_fields() {
     .build();
 
     let mut fields = scheme.fields().collect::<Vec<_>>();
-    fields.sort_by(|f1, f2| f1.name().partial_cmp(f2.name()).unwrap());
+    fields.sort_by(|f1, f2| f1.name().cmp(&f2.name()));
 
     assert_eq!(
         fields,
@@ -1982,7 +2104,7 @@ fn test_scheme_json_serialization() {
 
     let new_scheme = serde_json::from_str::<Scheme>(&json).unwrap();
 
-    assert_eq!(scheme.inner.field_definitions.fields, new_scheme.inner.field_definitions.fields);
+    assert_eq!(scheme.inner.field_definitions.field_count(), new_scheme.inner.field_definitions.field_count());
 }
 
 #[test]

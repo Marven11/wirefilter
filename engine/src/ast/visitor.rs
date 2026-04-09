@@ -254,7 +254,7 @@ mod tests {
     fn test_uses_visitor_simple() {
         let ast = SCHEME.parse(r#"http.host == "test""#).unwrap();
         for field in SCHEME.fields() {
-            assert_eq!(ast.uses(field.name()), Ok(field.name() == "http.host"));
+            assert_eq!(ast.uses(&*field.name()), Ok(&*field.name() == "http.host"));
         }
     }
 
@@ -262,7 +262,7 @@ mod tests {
     fn test_uses_list_visitor_simple() {
         let ast = SCHEME.parse(r#"http.host in $test"#).unwrap();
         for field in SCHEME.fields() {
-            assert_eq!(ast.uses(field.name()), Ok(field.name() == "http.host"));
+            assert_eq!(ast.uses(&*field.name()), Ok(&*field.name() == "http.host"));
         }
     }
 
@@ -270,7 +270,7 @@ mod tests {
     fn test_uses_visitor_function() {
         let ast = SCHEME.parse(r#"echo(http.host) == "test""#).unwrap();
         for field in SCHEME.fields() {
-            assert_eq!(ast.uses(field.name()), Ok(field.name() == "http.host"));
+            assert_eq!(ast.uses(&*field.name()), Ok(&*field.name() == "http.host"));
         }
     }
 
@@ -278,7 +278,7 @@ mod tests {
     fn test_uses_list_visitor_function() {
         let ast = SCHEME.parse(r#"echo(http.host) in $test"#).unwrap();
         for field in SCHEME.fields() {
-            assert_eq!(ast.uses(field.name()), Ok(field.name() == "http.host"));
+            assert_eq!(ast.uses(&*field.name()), Ok(&*field.name() == "http.host"));
         }
     }
 
@@ -288,7 +288,7 @@ mod tests {
             .parse(r#"echo(echo(http.headers[*])[*])[0] == "test""#)
             .unwrap();
         for field in SCHEME.fields() {
-            assert_eq!(ast.uses(field.name()), Ok(field.name() == "http.headers"));
+            assert_eq!(ast.uses(&*field.name()), Ok(&*field.name() == "http.headers"));
         }
     }
 
@@ -298,7 +298,7 @@ mod tests {
             .parse(r#"echo(echo(http.headers[*])[*])[0] in $test"#)
             .unwrap();
         for field in SCHEME.fields() {
-            assert_eq!(ast.uses(field.name()), Ok(field.name() == "http.headers"));
+            assert_eq!(ast.uses(&*field.name()), Ok(&*field.name() == "http.headers"));
         }
     }
 }
