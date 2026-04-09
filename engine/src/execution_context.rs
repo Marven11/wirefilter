@@ -1,4 +1,4 @@
-use crate::scheme::{Field, List, Scheme, SchemeMismatchError};
+use crate::scheme::{Field, FieldDefinitions, List, Scheme, SchemeMismatchError};
 use crate::types::{GetType, LhsValue, LhsValueSeed, Type, TypeMismatchError};
 use crate::{FieldRef, ListMatcher, ListRef, UnknownFieldError};
 use serde::Serialize;
@@ -7,6 +7,7 @@ use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use std::borrow::Cow;
 use std::fmt;
 use std::fmt::Debug;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// An error that occurs when setting the field value in the [`crate::ExecutionContext`].
@@ -40,6 +41,7 @@ pub struct InvalidListMatcherError {
 /// index-based access to values for a filter during execution.
 #[derive(Debug, PartialEq)]
 pub struct ExecutionContext<'e, U = ()> {
+    field_definitions: Arc<FieldDefinitions>,
     scheme: Scheme,
     values: Box<[Option<LhsValue<'e>>]>,
     list_matchers: Box<[Box<dyn ListMatcher>]>,
@@ -62,6 +64,7 @@ impl<'e, U> ExecutionContext<'e, U> {
     /// This scheme will be used for resolving any field names and indices.
     pub fn new_with(scheme: &Scheme, f: impl FnOnce() -> U) -> Self {
         ExecutionContext {
+            field_definitions: scheme.field_definitions().clone(),
             scheme: scheme.clone(),
             values: vec![None; scheme.field_count()].into(),
             list_matchers: scheme
@@ -70,6 +73,11 @@ impl<'e, U> ExecutionContext<'e, U> {
                 .collect(),
             user_data: f(),
         }
+    }
+
+    /// Returns the associated field definitions.
+    pub fn field_definitions(&self) -> &Arc<FieldDefinitions> {
+        &self.field_definitions
     }
 
     /// Returns the associated scheme.
@@ -83,7 +91,7 @@ impl<'e, U> ExecutionContext<'e, U> {
         field: FieldRef<'_>,
         value: V,
     ) -> Result<Option<LhsValue<'e>>, SetFieldValueError> {
-        if self.scheme != *field.scheme() {
+        if !Arc::ptr_eq(&self.field_definitions, field.field_definitions()) {
             return Err(SetFieldValueError::SchemeMismatch(SchemeMismatchError));
         }
         let value = value.into();
@@ -107,17 +115,17 @@ impl<'e, U> ExecutionContext<'e, U> {
         name: &str,
         value: V,
     ) -> Result<Option<LhsValue<'e>>, SetFieldValueError> {
-        let field = self
-            .scheme
-            .get_field(name)
-            .map_err(SetFieldValueError::UnknownField)?;
+        let index = self
+            .field_definitions
+            .get_field_index(name)
+            .ok_or(SetFieldValueError::UnknownField(UnknownFieldError))?;
         let value = value.into();
 
-        let field_type = field.get_type();
+        let field_type = self.field_definitions.index(index).ty();
         let value_type = value.get_type();
 
         if field_type == value_type {
-            Ok(self.values[field.index()].replace(value))
+            Ok(self.values[index].replace(value))
         } else {
             Err(SetFieldValueError::TypeMismatch(TypeMismatchError {
                 expected: field_type.into(),
@@ -131,7 +139,7 @@ impl<'e, U> ExecutionContext<'e, U> {
         // This is safe because this code is reachable only from Filter::execute
         // which already performs the scheme compatibility check, but check that
         // invariant holds in the future at least in the debug mode.
-        debug_assert!(self.scheme() == field.scheme());
+        debug_assert!(Arc::ptr_eq(&self.field_definitions, field.field_definitions()));
 
         // For now we panic in this, but later we are going to align behaviour
         // with wireshark: resolve all subexpressions that don't have RHS value
@@ -153,7 +161,7 @@ impl<'e, U> ExecutionContext<'e, U> {
 
     /// Get the value of a field.
     pub fn get_field_value(&self, field: FieldRef<'_>) -> Option<&LhsValue<'_>> {
-        assert!(self.scheme() == field.scheme());
+        assert!(Arc::ptr_eq(&self.field_definitions, field.field_definitions()));
 
         self.values[field.index()].as_ref()
     }
@@ -209,6 +217,7 @@ impl<'e, U> ExecutionContext<'e, U> {
     #[inline]
     pub fn take_with<T>(self, default: impl Fn(U) -> T) -> ExecutionContext<'e, T> {
         ExecutionContext {
+            field_definitions: self.field_definitions,
             scheme: self.scheme,
             values: self.values,
             list_matchers: self.list_matchers,
@@ -226,6 +235,7 @@ impl<'e, U> ExecutionContext<'e, U> {
     #[inline]
     pub fn clone_with<T>(&self, user_data: T) -> ExecutionContext<'e, T> {
         ExecutionContext {
+            field_definitions: self.field_definitions.clone(),
             scheme: self.scheme.clone(),
             values: self.values.clone(),
             list_matchers: self.list_matchers.clone(),
@@ -254,11 +264,13 @@ pub struct ExecutionContextGuard<'a, 'e, U, T> {
 
 impl<'a, 'e, U, T> ExecutionContextGuard<'a, 'e, U, T> {
     fn new(old: &'a mut ExecutionContext<'e, U>, user_data: T) -> Self {
+        let field_definitions = old.field_definitions.clone();
         let scheme = old.scheme().clone();
         let values = std::mem::take(&mut old.values);
         let list_matchers = std::mem::take(&mut old.list_matchers);
 
         let new = ExecutionContext {
+            field_definitions,
             scheme,
             values,
             list_matchers,

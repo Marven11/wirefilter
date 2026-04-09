@@ -152,7 +152,7 @@ impl FilterAst {
     /// Compiles a [`FilterAst`] into a [`Filter`] using a specific [`Compiler`].
     pub fn compile_with_compiler<C: Compiler>(self, compiler: &mut C) -> Filter<C::U> {
         match compiler.compile_logical_expr(self.op) {
-            CompiledExpr::One(one) => Filter::new(one, self.scheme),
+            CompiledExpr::One(one) => Filter::new(one, self.scheme.field_definitions().clone()),
             CompiledExpr::Vec(_) => unreachable!(),
         }
     }
@@ -254,7 +254,7 @@ impl FilterValueAst {
 
     /// Compiles a [`FilterValueAst`] into a [`FilterValue`] using a specific [`Compiler`].
     pub fn compile_with_compiler<C: Compiler>(self, compiler: &mut C) -> FilterValue<C::U> {
-        FilterValue::new(compiler.compile_index_expr(self.op), self.scheme)
+        FilterValue::new(compiler.compile_index_expr(self.op), self.scheme.field_definitions().clone())
     }
 
     /// Compiles a [`FilterValueAst`] into a [`FilterValue`] using the [`DefaultCompiler`].

@@ -98,7 +98,7 @@ pub struct IndexAccessError {
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 /// A structure to represent a field inside a [`Scheme`](struct@Scheme).
 pub struct FieldRef<'s> {
-    scheme: &'s Scheme,
+    field_definitions: &'s Arc<FieldDefinitions>,
     index: usize,
 }
 
@@ -134,7 +134,7 @@ impl<'s> FieldRef<'s> {
     /// Returns the field's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
     pub fn name(&self) -> &'s str {
-        &self.scheme.inner.fields[self.index].name
+        &self.field_definitions.fields[self.index].name
     }
 
     /// Get the field's index in the [`Scheme`](struct@Scheme) identifier's list.
@@ -146,36 +146,36 @@ impl<'s> FieldRef<'s> {
     /// Returns whether the field value is optional.
     #[inline]
     pub fn optional(&self) -> bool {
-        self.scheme.inner.fields[self.index].optional
+        self.field_definitions.fields[self.index].optional
     }
 
-    /// Returns the [`Scheme`](struct@Scheme) to which this field belongs to.
+    /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) to which this field belongs to.
     #[inline]
-    pub fn scheme(&self) -> &'s Scheme {
-        self.scheme
+    pub fn field_definitions(&self) -> &'s Arc<FieldDefinitions> {
+        self.field_definitions
     }
 
     /// Converts to an owned [`Field`].
     #[inline]
     pub fn to_owned(&self) -> Field {
         Field {
-            scheme: self.scheme.clone(),
+            field_definitions: self.field_definitions.clone(),
             index: self.index,
         }
     }
 
-    /// Reborrows the field relatively to the specified [`Scheme`] reference.
+    /// Reborrows the field relatively to the specified [`FieldDefinitions`] reference.
     ///
     /// Useful when you have a [`FieldRef`] borrowed from an owned [`Field`]
     /// but you need to extend/change it's lifetime.
     ///
-    /// Panics if the field doesn't belong to the specified scheme.
+    /// Panics if the field doesn't belong to the specified field definitions.
     #[inline]
-    pub fn reborrow(self, scheme: &Scheme) -> FieldRef<'_> {
-        assert!(self.scheme == scheme);
+    pub fn reborrow(self, field_definitions: &Arc<FieldDefinitions>) -> FieldRef<'_> {
+        assert!(Arc::ptr_eq(self.field_definitions, field_definitions));
 
         FieldRef {
-            scheme,
+            field_definitions,
             index: self.index,
         }
     }
@@ -184,7 +184,7 @@ impl<'s> FieldRef<'s> {
 impl GetType for FieldRef<'_> {
     #[inline]
     fn get_type(&self) -> Type {
-        self.scheme.inner.fields[self.index].ty
+        self.field_definitions.fields[self.index].ty
     }
 }
 
@@ -198,7 +198,7 @@ impl PartialEq<Field> for FieldRef<'_> {
 #[derive(PartialEq, Eq, Clone, Hash)]
 /// A structure to represent a field inside a [`Scheme`](struct@Scheme).
 pub struct Field {
-    scheme: Scheme,
+    field_definitions: Arc<FieldDefinitions>,
     index: usize,
 }
 
@@ -218,7 +218,7 @@ impl Field {
     /// Returns the field's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
     pub fn name(&self) -> &str {
-        &self.scheme.inner.fields[self.index].name
+        &self.field_definitions.fields[self.index].name
     }
 
     /// Get the field's index in the [`Scheme`](struct@Scheme) identifier's list.
@@ -230,20 +230,20 @@ impl Field {
     /// Returns whether the field value is optional.
     #[inline]
     pub fn optional(&self) -> bool {
-        self.scheme.inner.fields[self.index].optional
+        self.field_definitions.fields[self.index].optional
     }
 
-    /// Returns the [`Scheme`](struct@Scheme) to which this field belongs to.
+    /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) to which this field belongs to.
     #[inline]
-    pub fn scheme(&self) -> &Scheme {
-        &self.scheme
+    pub fn field_definitions(&self) -> &Arc<FieldDefinitions> {
+        &self.field_definitions
     }
 
-    /// Converts to a borrowed [`Field`].
+    /// Converts to a borrowed [`FieldRef`].
     #[inline]
     pub fn as_ref(&self) -> FieldRef<'_> {
         FieldRef {
-            scheme: &self.scheme,
+            field_definitions: &self.field_definitions,
             index: self.index,
         }
     }
@@ -252,7 +252,7 @@ impl Field {
 impl GetType for Field {
     #[inline]
     fn get_type(&self) -> Type {
-        self.scheme.inner.fields[self.index].ty
+        self.field_definitions.fields[self.index].ty
     }
 }
 
@@ -616,11 +616,95 @@ pub struct ListRedefinitionError(Type);
 
 type IdentifierName = Arc<str>;
 
-#[derive(Debug, PartialEq)]
-struct FieldDefinition {
+#[derive(Debug, PartialEq, Clone, Hash)]
+pub struct FieldDefinition {
     name: IdentifierName,
     ty: Type,
     optional: bool,
+}
+
+impl FieldDefinition {
+    /// Returns the name of the field.
+    #[inline]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the type of the field.
+    #[inline]
+    pub fn ty(&self) -> Type {
+        self.ty
+    }
+
+    /// Returns whether the field is optional.
+    #[inline]
+    pub fn optional(&self) -> bool {
+        self.optional
+    }
+}
+
+/// A shared collection of field definitions that can be referenced by multiple schemes.
+#[derive(Debug, Clone)]
+pub struct FieldDefinitions {
+    fields: Vec<FieldDefinition>,
+    nil_not_equal_is_false: bool,
+    field_names: HashMap<Arc<str>, usize, FnvBuildHasher>,
+}
+
+impl PartialEq for FieldDefinitions {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields && self.nil_not_equal_is_false == other.nil_not_equal_is_false
+    }
+}
+
+impl Eq for FieldDefinitions {}
+
+impl Hash for FieldDefinitions {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.fields.hash(state);
+        self.nil_not_equal_is_false.hash(state);
+    }
+}
+
+impl FieldDefinitions {
+    /// Returns the number of fields.
+    #[inline]
+    pub fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Returns a reference to the field definition at the given index.
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&FieldDefinition> {
+        self.fields.get(index)
+    }
+
+    /// Returns the field definition at the given index (panics if out of bounds).
+    #[inline]
+    pub fn index(&self, index: usize) -> &FieldDefinition {
+        &self.fields[index]
+    }
+
+    /// Returns the field index for the given name.
+    #[inline]
+    pub fn get_field_index(&self, name: &str) -> Option<usize> {
+        self.field_names.get(name).copied()
+    }
+
+    /// Returns the nil_not_equal_behavior setting.
+    #[inline]
+    pub(crate) fn nil_not_equal_behavior(&self) -> bool {
+        !self.nil_not_equal_is_false
+    }
+}
+
+#[derive(Debug)]
+struct SchemeInner {
+    field_definitions: Arc<FieldDefinitions>,
+    functions: Vec<(IdentifierName, Box<dyn FunctionDefinition>)>,
+    items: HashMap<IdentifierName, SchemeItem, FnvBuildHasher>,
+    list_types: HashMap<Type, usize, FnvBuildHasher>,
+    lists: Vec<(Type, Box<dyn ListDefinition>)>,
 }
 
 /// A builder for a [`Scheme`].
@@ -640,6 +724,27 @@ impl SchemeBuilder {
     /// Creates a new scheme.
     pub fn new() -> Self {
         Default::default()
+    }
+
+    /// Creates a new scheme builder that shares the given [`FieldDefinitions`].
+    ///
+    /// The builder will use the same field definitions, allowing multiple
+    /// schemes to share field data without duplication.
+    pub fn with_field_definitions(field_definitions: Arc<FieldDefinitions>) -> Self {
+        let items: HashMap<IdentifierName, SchemeItem, FnvBuildHasher> = field_definitions
+            .field_names
+            .iter()
+            .map(|(name, &index)| (name.clone(), SchemeItem::Field(index)))
+            .collect();
+
+        SchemeBuilder {
+            fields: field_definitions.fields.clone(),
+            functions: Vec::new(),
+            items,
+            list_types: HashMap::default(),
+            lists: Vec::new(),
+            nil_not_equal_is_false: field_definitions.nil_not_equal_is_false,
+        }
     }
 
     fn add_field_full(
@@ -741,8 +846,26 @@ impl SchemeBuilder {
 
     /// Build a new [`Scheme`] from this builder.
     pub fn build(self) -> Scheme {
+        let field_names: HashMap<Arc<str>, usize, FnvBuildHasher> = self.items
+            .iter()
+            .filter_map(|(name, item)| match item {
+                SchemeItem::Field(index) => Some((name.clone(), *index)),
+                SchemeItem::Function(_) => None,
+            })
+            .collect();
+
         Scheme {
-            inner: Arc::new(self),
+            inner: Arc::new(SchemeInner {
+                field_definitions: Arc::new(FieldDefinitions {
+                    fields: self.fields,
+                    nil_not_equal_is_false: self.nil_not_equal_is_false,
+                    field_names,
+                }),
+                functions: self.functions,
+                items: self.items,
+                list_types: self.list_types,
+                lists: self.lists,
+            }),
         }
     }
 }
@@ -767,7 +890,7 @@ impl<N: AsRef<str>> FromIterator<(N, Type)> for SchemeBuilder {
 /// in ambiguous contexts.
 #[derive(Clone, Debug)]
 pub struct Scheme {
-    inner: Arc<SchemeBuilder>,
+    inner: Arc<SchemeInner>,
 }
 
 impl PartialEq for Scheme {
@@ -855,7 +978,7 @@ impl<'s> Scheme {
     pub(crate) fn get(&'s self, name: &str) -> Option<Identifier<'s>> {
         self.inner.items.get(name).map(move |item| match *item {
             SchemeItem::Field(index) => Identifier::Field(FieldRef {
-                scheme: self,
+                field_definitions: &self.inner.field_definitions,
                 index,
             }),
             SchemeItem::Function(index) => Identifier::Function(FunctionRef {
@@ -876,8 +999,8 @@ impl<'s> Scheme {
     /// Iterates over fields registered in the [`scheme`](struct@Scheme).
     #[inline]
     pub fn fields(&'s self) -> impl ExactSizeIterator<Item = FieldRef<'s>> + 's {
-        (0..self.inner.fields.len()).map(|index| FieldRef {
-            scheme: self,
+        (0..self.inner.field_definitions.fields.len()).map(|index| FieldRef {
+            field_definitions: &self.inner.field_definitions,
             index,
         })
     }
@@ -885,7 +1008,13 @@ impl<'s> Scheme {
     /// Returns the number of fields in the [`scheme`](struct@Scheme).
     #[inline]
     pub fn field_count(&self) -> usize {
-        self.inner.fields.len()
+        self.inner.field_definitions.fields.len()
+    }
+
+    /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) shared by this scheme.
+    #[inline]
+    pub fn field_definitions(&self) -> &Arc<FieldDefinitions> {
+        &self.inner.field_definitions
     }
 
     /// Returns the number of functions in the [`scheme`](struct@Scheme).
@@ -953,9 +1082,10 @@ impl<'s> Scheme {
         })
     }
 
+    /// Returns the nil_not_equal_behavior setting.
     #[inline]
-    pub(crate) fn nil_not_equal_behavior(&self) -> bool {
-        !self.inner.nil_not_equal_is_false
+    pub fn nil_not_equal_behavior(&self) -> bool {
+        self.inner.field_definitions.nil_not_equal_behavior()
     }
 }
 
@@ -1852,7 +1982,7 @@ fn test_scheme_json_serialization() {
 
     let new_scheme = serde_json::from_str::<Scheme>(&json).unwrap();
 
-    assert_eq!(scheme.inner.fields, new_scheme.inner.fields);
+    assert_eq!(scheme.inner.field_definitions.fields, new_scheme.inner.field_definitions.fields);
 }
 
 #[test]
