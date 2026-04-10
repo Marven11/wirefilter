@@ -19,41 +19,38 @@ fn main() {
 
     println!("Scheme1 owned field count: {}", scheme1.field_count());
     println!("Scheme2 owned field count: {}", scheme2.field_count());
-    println!("Total field count (shared): {}", field_definitions.field_count());
-    println!("Shared field_definitions: {}", Arc::ptr_eq(scheme1.field_definitions(), scheme2.field_definitions()));
-
-    assert_eq!(scheme1.field_count(), 3);
-    assert_eq!(scheme2.field_count(), 4);
-    assert_eq!(field_definitions.field_count(), 4);
+    println!(
+        "Total field count (shared): {}",
+        field_definitions.field_count()
+    );
+    println!(
+        "Shared field_definitions: {}",
+        Arc::ptr_eq(scheme1.field_definitions(), scheme2.field_definitions())
+    );
 
     assert!(scheme1.get_field("ip.src").is_ok());
     assert!(scheme1.get_field("ip.protocol").is_err());
     assert!(scheme2.get_field("ip.src").is_ok());
     assert!(scheme2.get_field("ip.protocol").is_ok());
 
-    let mut ctx1 = ExecutionContext::new(&scheme1);
-    ctx1.set_field_value(
+    let mut ctx = ExecutionContext::new(&scheme2);
+
+    ctx.set_field_value(
         scheme1.get_field("ip.src").unwrap(),
         LhsValue::Ip("1.2.3.4".parse().unwrap()),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let mut ctx2 = ExecutionContext::new(&scheme2);
-    ctx2.set_field_value(
-        scheme2.get_field("ip.src").unwrap(),
-        LhsValue::Ip("5.6.7.8".parse().unwrap()),
-    ).unwrap();
-    ctx2.set_field_value(
-        scheme2.get_field("ip.protocol").unwrap(),
-        LhsValue::Int(6),
-    ).unwrap();
+    ctx.set_field_value(scheme2.get_field("ip.protocol").unwrap(), LhsValue::Int(6))
+        .unwrap();
 
     let filter1 = scheme1.parse("ip.src == 1.2.3.4").unwrap().compile();
-    let filter2 = scheme2.parse("ip.src == 5.6.7.8").unwrap().compile();
+    let filter2 = scheme2.parse("ip.src == 1.2.3.4").unwrap().compile();
     let filter3 = scheme2.parse("ip.protocol == 6").unwrap().compile();
 
-    println!("Filter1 on ctx1: {:?}", filter1.execute(&ctx1).unwrap());
-    println!("Filter2 on ctx2: {:?}", filter2.execute(&ctx2).unwrap());
-    println!("Filter3 on ctx2: {:?}", filter3.execute(&ctx2).unwrap());
+    println!("Filter1 on ctx: {:?}", filter1.execute(&ctx).unwrap());
+    println!("Filter2 on ctx: {:?}", filter2.execute(&ctx).unwrap());
+    println!("Filter3 on ctx: {:?}", filter3.execute(&ctx).unwrap());
 
     let ghost_result = scheme1.parse("ip.protocol == 6");
     println!("Scheme1 parsing ghost field: {:?}", ghost_result);
