@@ -1,16 +1,16 @@
 use std::sync::Arc;
-use wirefilter::{ExecutionContext, FieldDefinitions, LhsValue, SchemeBuilder, Type};
+use wirefilter::{ExecutionContext, LhsValue, SchemeBuilder, SchemeStore, Type};
 
 fn main() {
-    let field_definitions: Arc<FieldDefinitions> = Arc::new(FieldDefinitions::new(false));
+    let scheme_store: Arc<SchemeStore> = Arc::new(SchemeStore::new(false));
 
-    let mut builder1 = SchemeBuilder::new_with_field_definitions(field_definitions.clone());
+    let mut builder1 = SchemeBuilder::new_with_scheme_store(scheme_store.clone());
     builder1.add_field("ip.src", Type::Ip).unwrap();
     builder1.add_field("ip.dst", Type::Ip).unwrap();
     builder1.add_field("port", Type::Int).unwrap();
     let scheme1 = builder1.build();
 
-    let mut builder2 = SchemeBuilder::new_with_field_definitions(field_definitions.clone());
+    let mut builder2 = SchemeBuilder::new_with_scheme_store(scheme_store.clone());
     builder2.add_field("ip.src", Type::Ip).unwrap();
     builder2.add_field("ip.dst", Type::Ip).unwrap();
     builder2.add_field("port", Type::Int).unwrap();
@@ -21,11 +21,11 @@ fn main() {
     println!("Scheme2 owned field count: {}", scheme2.field_count());
     println!(
         "Total field count (shared): {}",
-        field_definitions.field_count()
+        scheme_store.field_count()
     );
     println!(
-        "Shared field_definitions: {}",
-        Arc::ptr_eq(scheme1.field_definitions(), scheme2.field_definitions())
+        "Shared scheme_store: {}",
+        Arc::ptr_eq(scheme1.scheme_store(), scheme2.scheme_store())
     );
 
     assert!(scheme1.get_field("ip.src").is_ok());

@@ -11,6 +11,7 @@ use crate::functions::{
     ExactSizeChain, FunctionArgs, FunctionDefinition, FunctionDefinitionContext, FunctionParam,
     FunctionParamError,
 };
+
 use crate::lex::{Lex, LexError, LexErrorKind, LexResult, LexWith, expect, skip_space, span};
 use crate::lhs_types::Array;
 use crate::scheme::Function;
@@ -402,7 +403,7 @@ impl FunctionCallExpr {
             if optional_arg_count.is_some()
                 && index >= (mandatory_arg_count + optional_arg_count.unwrap())
             {
-                return Err(invalid_args_count(definition, input));
+                return Err(invalid_args_count(&*definition, input));
             }
 
             definition
@@ -444,7 +445,7 @@ impl FunctionCallExpr {
         }
 
         if args.len() < mandatory_arg_count {
-            return Err(invalid_args_count(definition, input));
+            return Err(invalid_args_count(&*definition, input));
         }
 
         input = expect(input, ")")?;

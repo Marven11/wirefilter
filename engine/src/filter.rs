@@ -7,7 +7,7 @@
 
 use crate::execution_context::ExecutionContext;
 use crate::lhs_types::TypedArray;
-use crate::scheme::{FieldDefinitions, SchemeMismatchError};
+use crate::scheme::{SchemeStore, SchemeMismatchError};
 use crate::types::{LhsValue, Type};
 use std::fmt;
 use std::sync::Arc;
@@ -182,22 +182,22 @@ impl<U> CompiledValueExpr<U> {
 /// and execution.
 pub struct Filter<U = ()> {
     root_expr: CompiledOneExpr<U>,
-    field_definitions: Arc<FieldDefinitions>,
+    scheme_store: Arc<SchemeStore>,
 }
 
 impl<U> std::fmt::Debug for Filter<U> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Filter")
             .field("root", &self.root_expr)
-            .field("field_definitions", &self.field_definitions)
+            .field("scheme_store", &self.scheme_store)
             .finish()
     }
 }
 
 impl<U> Filter<U> {
     /// Creates a compiled expression IR from a generic closure.
-    pub(crate) fn new(root_expr: CompiledOneExpr<U>, field_definitions: Arc<FieldDefinitions>) -> Self {
-        Filter { root_expr, field_definitions }
+    pub(crate) fn new(root_expr: CompiledOneExpr<U>, scheme_store: Arc<SchemeStore>) -> Self {
+        Filter { root_expr, scheme_store }
     }
 
     /// Executes a compiled filter expression against a provided context with values.
@@ -205,7 +205,7 @@ impl<U> Filter<U> {
         &self,
         ctx: &'e ExecutionContext<'e, U>,
     ) -> Result<bool, SchemeMismatchError> {
-        if Arc::ptr_eq(ctx.field_definitions(), &self.field_definitions) {
+        if Arc::ptr_eq(ctx.scheme_store(), &self.scheme_store) {
             Ok(self.root_expr.execute(ctx))
         } else {
             Err(SchemeMismatchError)
@@ -216,13 +216,13 @@ impl<U> Filter<U> {
 /// An IR for a compiled value expression.
 pub struct FilterValue<U = ()> {
     root_expr: CompiledValueExpr<U>,
-    field_definitions: Arc<FieldDefinitions>,
+    scheme_store: Arc<SchemeStore>,
 }
 
 impl<U> FilterValue<U> {
     /// Creates a compiled expression IR from a generic closure.
-    pub(crate) fn new(root_expr: CompiledValueExpr<U>, field_definitions: Arc<FieldDefinitions>) -> Self {
-        FilterValue { root_expr, field_definitions }
+    pub(crate) fn new(root_expr: CompiledValueExpr<U>, scheme_store: Arc<SchemeStore>) -> Self {
+        FilterValue { root_expr, scheme_store }
     }
 
     /// Executes a compiled value expression against a provided context with values.
@@ -230,7 +230,7 @@ impl<U> FilterValue<U> {
         &self,
         ctx: &'e ExecutionContext<'e, U>,
     ) -> Result<Result<LhsValue<'e>, Type>, SchemeMismatchError> {
-        if Arc::ptr_eq(ctx.field_definitions(), &self.field_definitions) {
+        if Arc::ptr_eq(ctx.scheme_store(), &self.scheme_store) {
             Ok(self.root_expr.execute(ctx))
         } else {
             Err(SchemeMismatchError)

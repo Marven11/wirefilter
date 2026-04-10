@@ -13,7 +13,7 @@ use crate::searcher::{EmptySearcher, MemmemSearcher};
 use crate::strict_partial_ord::StrictPartialOrd;
 use crate::types::{GetType, LhsValue, RhsValue, RhsValues, Type};
 use crate::ExecutionContext;
-use crate::scheme::FieldDefinitions;
+use crate::scheme::SchemeStore;
 use std::sync::Arc;
 use serde::{Serialize, Serializer};
 use sliceslice::MemchrSearcher;
@@ -243,10 +243,10 @@ pub enum IdentifierExpr {
 
 impl IdentifierExpr {
     #[inline]
-    fn field_definitions(&self) -> &Arc<FieldDefinitions> {
+    fn scheme_store(&self) -> &Arc<SchemeStore> {
         match self {
-            Self::Field(f) => f.field_definitions(),
-            Self::FunctionCallExpr(call) => call.function.scheme().field_definitions(),
+            Self::Field(f) => f.scheme_store(),
+            Self::FunctionCallExpr(call) => call.function.scheme_store(),
         }
     }
 }
@@ -438,7 +438,7 @@ impl Expr for ComparisonExpr {
 
     fn compile_with_compiler<C: Compiler>(self, compiler: &mut C) -> CompiledExpr<C::U> {
         let lhs = self.lhs;
-        let nil_not_equal_behavior = lhs.identifier.field_definitions().nil_not_equal_behavior();
+        let nil_not_equal_behavior = lhs.identifier.scheme_store().nil_not_equal_behavior();
 
         match self.op {
             ComparisonOpExpr::IsTrue => {

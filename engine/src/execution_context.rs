@@ -1,4 +1,4 @@
-use crate::scheme::{Field, FieldDefinitions, List, Scheme, SchemeMismatchError};
+use crate::scheme::{Field, SchemeStore, List, Scheme, SchemeMismatchError};
 use crate::types::{GetType, LhsValue, LhsValueSeed, Type, TypeMismatchError};
 use crate::{FieldRef, ListMatcher, ListRef, UnknownFieldError};
 use serde::Serialize;
@@ -41,7 +41,7 @@ pub struct InvalidListMatcherError {
 /// index-based access to values for a filter during execution.
 #[derive(Debug, PartialEq)]
 pub struct ExecutionContext<'e, U = ()> {
-    field_definitions: Arc<FieldDefinitions>,
+    scheme_store: Arc<SchemeStore>,
     scheme: Scheme,
     values: Box<[Option<LhsValue<'e>>]>,
     list_matchers: Box<[Box<dyn ListMatcher>]>,
@@ -64,20 +64,23 @@ impl<'e, U> ExecutionContext<'e, U> {
     /// This scheme will be used for resolving any field names and indices.
     pub fn new_with(scheme: &Scheme, f: impl FnOnce() -> U) -> Self {
         ExecutionContext {
-            field_definitions: scheme.field_definitions().clone(),
+            scheme_store: scheme.scheme_store().clone(),
             scheme: scheme.clone(),
-            values: vec![None; scheme.field_definitions().field_count()].into(),
+            values: vec![None; scheme.scheme_store().field_count()].into(),
             list_matchers: scheme
                 .lists()
-                .map(|list| list.definition().new_matcher())
+                .map(|list| {
+                    let guard = list.definition();
+                    guard.new_matcher()
+                })
                 .collect(),
             user_data: f(),
         }
     }
 
     /// Returns the associated field definitions.
-    pub fn field_definitions(&self) -> &Arc<FieldDefinitions> {
-        &self.field_definitions
+    pub fn scheme_store(&self) -> &Arc<SchemeStore> {
+        &self.scheme_store
     }
 
     /// Returns the associated scheme.
@@ -91,7 +94,7 @@ impl<'e, U> ExecutionContext<'e, U> {
         field: FieldRef<'_>,
         value: V,
     ) -> Result<Option<LhsValue<'e>>, SetFieldValueError> {
-        if !Arc::ptr_eq(&self.field_definitions, field.field_definitions()) {
+        if !Arc::ptr_eq(&self.scheme_store, field.scheme_store()) {
             return Err(SetFieldValueError::SchemeMismatch(SchemeMismatchError));
         }
         let value = value.into();
@@ -116,16 +119,83 @@ impl<'e, U> ExecutionContext<'e, U> {
         value: V,
     ) -> Result<Option<LhsValue<'e>>, SetFieldValueError> {
         let index = self
-            .field_definitions
+            .scheme_store
             .get_field_index(name)
             .ok_or(SetFieldValueError::UnknownField(UnknownFieldError))?;
         let value = value.into();
 
-        let field_type = self.field_definitions.index(index).ty();
+        let field_type = self.scheme_store.index(index).ty();
         let value_type = value.get_type();
 
         if field_type == value_type {
             Ok(self.values[index].replace(value))
+        } else {
+            Err(SetFieldValueError::TypeMismatch(TypeMismatchError {
+                expected: field_type.into(),
+                actual: value_type,
+            }))
+        }
+    }
+
+    /// Sets a runtime value for a given field only if it hasn't been set yet.
+    ///
+    /// The callback is invoked only when the field's value is currently `None`,
+    /// avoiding redundant initialization of shared fields across multiple schemes.
+    /// Returns `true` if the value was set, `false` if it was already present.
+    pub fn set_field_value_lazy<'v: 'e, V: Into<LhsValue<'v>>>(
+        &mut self,
+        field: FieldRef<'_>,
+        f: impl FnOnce() -> V,
+    ) -> Result<bool, SetFieldValueError> {
+        if !Arc::ptr_eq(&self.scheme_store, field.scheme_store()) {
+            return Err(SetFieldValueError::SchemeMismatch(SchemeMismatchError));
+        }
+
+        if self.values[field.index()].is_some() {
+            return Ok(false);
+        }
+
+        let value = f().into();
+        let field_type = field.get_type();
+        let value_type = value.get_type();
+
+        if field_type == value_type {
+            self.values[field.index()] = Some(value);
+            Ok(true)
+        } else {
+            Err(SetFieldValueError::TypeMismatch(TypeMismatchError {
+                expected: field_type.into(),
+                actual: value_type,
+            }))
+        }
+    }
+
+    /// Sets a runtime value for a given field name only if it hasn't been set yet.
+    ///
+    /// The callback is invoked only when the field's value is currently `None`,
+    /// avoiding redundant initialization of shared fields across multiple schemes.
+    /// Returns `true` if the value was set, `false` if it was already present.
+    pub fn set_field_value_from_name_lazy<'v: 'e, V: Into<LhsValue<'v>>>(
+        &mut self,
+        name: &str,
+        f: impl FnOnce() -> V,
+    ) -> Result<bool, SetFieldValueError> {
+        let index = self
+            .scheme_store
+            .get_field_index(name)
+            .ok_or(SetFieldValueError::UnknownField(UnknownFieldError))?;
+
+        if self.values[index].is_some() {
+            return Ok(false);
+        }
+
+        let value = f().into();
+        let field_type = self.scheme_store.index(index).ty();
+        let value_type = value.get_type();
+
+        if field_type == value_type {
+            self.values[index] = Some(value);
+            Ok(true)
         } else {
             Err(SetFieldValueError::TypeMismatch(TypeMismatchError {
                 expected: field_type.into(),
@@ -139,7 +209,7 @@ impl<'e, U> ExecutionContext<'e, U> {
         // This is safe because this code is reachable only from Filter::execute
         // which already performs the scheme compatibility check, but check that
         // invariant holds in the future at least in the debug mode.
-        debug_assert!(Arc::ptr_eq(&self.field_definitions, field.field_definitions()));
+        debug_assert!(Arc::ptr_eq(&self.scheme_store, field.scheme_store()));
 
         // For now we panic in this, but later we are going to align behaviour
         // with wireshark: resolve all subexpressions that don't have RHS value
@@ -161,21 +231,21 @@ impl<'e, U> ExecutionContext<'e, U> {
 
     /// Get the value of a field.
     pub fn get_field_value(&self, field: FieldRef<'_>) -> Option<&LhsValue<'_>> {
-        assert!(Arc::ptr_eq(&self.field_definitions, field.field_definitions()));
+        assert!(Arc::ptr_eq(&self.scheme_store, field.scheme_store()));
 
         self.values[field.index()].as_ref()
     }
 
     #[inline]
     pub(crate) fn get_list_matcher_unchecked(&self, list: &List) -> &dyn ListMatcher {
-        debug_assert!(self.scheme() == list.scheme());
+        debug_assert!(Arc::ptr_eq(&self.scheme_store, list.scheme_store()));
 
         &*self.list_matchers[list.index()]
     }
 
     /// Get the list matcher object for the specified list type.
     pub fn get_list_matcher(&self, list: ListRef<'_>) -> &dyn ListMatcher {
-        assert!(self.scheme() == list.scheme());
+        assert!(Arc::ptr_eq(&self.scheme_store, list.scheme_store()));
 
         &*self.list_matchers[list.index()]
     }
@@ -188,7 +258,7 @@ impl<'e, U> ExecutionContext<'e, U> {
 
     /// Get the list matcher object for the specified list type.
     pub fn get_list_matcher_mut(&mut self, list: ListRef<'_>) -> &mut dyn ListMatcher {
-        assert!(self.scheme() == list.scheme());
+        assert!(Arc::ptr_eq(&self.scheme_store, list.scheme_store()));
 
         &mut *self.list_matchers[list.index()]
     }
@@ -217,7 +287,7 @@ impl<'e, U> ExecutionContext<'e, U> {
     #[inline]
     pub fn take_with<T>(self, default: impl Fn(U) -> T) -> ExecutionContext<'e, T> {
         ExecutionContext {
-            field_definitions: self.field_definitions,
+            scheme_store: self.scheme_store,
             scheme: self.scheme,
             values: self.values,
             list_matchers: self.list_matchers,
@@ -235,7 +305,7 @@ impl<'e, U> ExecutionContext<'e, U> {
     #[inline]
     pub fn clone_with<T>(&self, user_data: T) -> ExecutionContext<'e, T> {
         ExecutionContext {
-            field_definitions: self.field_definitions.clone(),
+            scheme_store: self.scheme_store.clone(),
             scheme: self.scheme.clone(),
             values: self.values.clone(),
             list_matchers: self.list_matchers.clone(),
@@ -264,13 +334,13 @@ pub struct ExecutionContextGuard<'a, 'e, U, T> {
 
 impl<'a, 'e, U, T> ExecutionContextGuard<'a, 'e, U, T> {
     fn new(old: &'a mut ExecutionContext<'e, U>, user_data: T) -> Self {
-        let field_definitions = old.field_definitions.clone();
+        let scheme_store = old.scheme_store.clone();
         let scheme = old.scheme().clone();
         let values = std::mem::take(&mut old.values);
         let list_matchers = std::mem::take(&mut old.list_matchers);
 
         let new = ExecutionContext {
-            field_definitions,
+            scheme_store,
             scheme,
             values,
             list_matchers,

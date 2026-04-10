@@ -99,7 +99,7 @@ pub struct IndexAccessError {
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 /// A structure to represent a field inside a [`Scheme`](struct@Scheme).
 pub struct FieldRef<'s> {
-    field_definitions: &'s Arc<FieldDefinitions>,
+    scheme_store: &'s Arc<SchemeStore>,
     index: usize,
 }
 
@@ -134,13 +134,13 @@ impl<'i, 's> LexWith<'i, &'s Scheme> for FieldRef<'s> {
 impl<'s> FieldRef<'s> {
     #[inline]
     fn field_def(&self) -> MappedRwLockReadGuard<'s, FieldDefinition> {
-        self.field_definitions.index(self.index)
+        self.scheme_store.index(self.index)
     }
 
     /// Returns the field's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
     pub fn name(&self) -> MappedRwLockReadGuard<'s, str> {
-        RwLockReadGuard::try_map(self.field_definitions.inner.read(), |inner: &FieldDefinitionsInner| inner.fields.get(self.index))
+        RwLockReadGuard::try_map(self.scheme_store.inner.read(), |inner: &SchemeStoreInner| inner.fields.get(self.index))
             .map(|guard| MappedRwLockReadGuard::map(guard, |fd| &fd.name[..]))
             .unwrap_or_else(|_| panic!("index {} out of bounds", self.index))
     }
@@ -157,33 +157,33 @@ impl<'s> FieldRef<'s> {
         self.field_def().optional
     }
 
-    /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) to which this field belongs to.
+    /// Returns the [`SchemeStore`](struct@SchemeStore) to which this field belongs to.
     #[inline]
-    pub fn field_definitions(&self) -> &'s Arc<FieldDefinitions> {
-        self.field_definitions
+    pub fn scheme_store(&self) -> &'s Arc<SchemeStore> {
+        self.scheme_store
     }
 
     /// Converts to an owned [`Field`].
     #[inline]
     pub fn to_owned(&self) -> Field {
         Field {
-            field_definitions: self.field_definitions.clone(),
+            scheme_store: self.scheme_store.clone(),
             index: self.index,
         }
     }
 
-    /// Reborrows the field relatively to the specified [`FieldDefinitions`] reference.
+    /// Reborrows the field relatively to the specified [`SchemeStore`] reference.
     ///
     /// Useful when you have a [`FieldRef`] borrowed from an owned [`Field`]
     /// but you need to extend/change it's lifetime.
     ///
     /// Panics if the field doesn't belong to the specified field definitions.
     #[inline]
-    pub fn reborrow(self, field_definitions: &Arc<FieldDefinitions>) -> FieldRef<'_> {
-        assert!(Arc::ptr_eq(self.field_definitions, field_definitions));
+    pub fn reborrow(self, scheme_store: &Arc<SchemeStore>) -> FieldRef<'_> {
+        assert!(Arc::ptr_eq(self.scheme_store, scheme_store));
 
         FieldRef {
-            field_definitions,
+            scheme_store,
             index: self.index,
         }
     }
@@ -206,7 +206,7 @@ impl PartialEq<Field> for FieldRef<'_> {
 #[derive(PartialEq, Eq, Clone, Hash)]
 /// A structure to represent a field inside a [`Scheme`](struct@Scheme).
 pub struct Field {
-    field_definitions: Arc<FieldDefinitions>,
+    scheme_store: Arc<SchemeStore>,
     index: usize,
 }
 
@@ -225,13 +225,13 @@ impl Debug for Field {
 impl Field {
     #[inline]
     fn field_def(&self) -> MappedRwLockReadGuard<'_, FieldDefinition> {
-        self.field_definitions.index(self.index)
+        self.scheme_store.index(self.index)
     }
 
     /// Returns the field's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
     pub fn name(&self) -> MappedRwLockReadGuard<'_, str> {
-        RwLockReadGuard::try_map(self.field_definitions.inner.read(), |inner: &FieldDefinitionsInner| inner.fields.get(self.index))
+        RwLockReadGuard::try_map(self.scheme_store.inner.read(), |inner: &SchemeStoreInner| inner.fields.get(self.index))
             .map(|guard| MappedRwLockReadGuard::map(guard, |fd| &fd.name[..]))
             .unwrap_or_else(|_| panic!("index {} out of bounds", self.index))
     }
@@ -248,17 +248,17 @@ impl Field {
         self.field_def().optional
     }
 
-    /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) to which this field belongs to.
+    /// Returns the [`SchemeStore`](struct@SchemeStore) to which this field belongs to.
     #[inline]
-    pub fn field_definitions(&self) -> &Arc<FieldDefinitions> {
-        &self.field_definitions
+    pub fn scheme_store(&self) -> &Arc<SchemeStore> {
+        &self.scheme_store
     }
 
     /// Converts to a borrowed [`FieldRef`].
     #[inline]
     pub fn as_ref(&self) -> FieldRef<'_> {
         FieldRef {
-            field_definitions: &self.field_definitions,
+            scheme_store: &self.scheme_store,
             index: self.index,
         }
     }
@@ -281,7 +281,7 @@ impl PartialEq<FieldRef<'_>> for Field {
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 /// A structure to represent a function inside a [`Scheme`](struct@Scheme).
 pub struct FunctionRef<'s> {
-    scheme: &'s Scheme,
+    scheme_store: &'s Arc<SchemeStore>,
     index: usize,
 }
 
@@ -316,8 +316,11 @@ impl<'i, 's> LexWith<'i, &'s Scheme> for FunctionRef<'s> {
 impl<'s> FunctionRef<'s> {
     /// Returns the function's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
-    pub fn name(&self) -> &'s str {
-        &self.scheme.inner.functions[self.index].0
+    pub fn name(&self) -> MappedRwLockReadGuard<'s, str> {
+        MappedRwLockReadGuard::map(
+            self.scheme_store.function_at(self.index),
+            |f| &f.0[..],
+        )
     }
 
     /// Get the function's index in the [`Scheme`](struct@Scheme) identifier's list.
@@ -326,38 +329,41 @@ impl<'s> FunctionRef<'s> {
         self.index
     }
 
-    /// Returns the [`Scheme`](struct@Scheme) to which this function belongs to.
+    /// Returns the [`SchemeStore`](struct@SchemeStore) to which this function belongs to.
     #[inline]
-    pub fn scheme(&self) -> &'s Scheme {
-        self.scheme
+    pub fn scheme_store(&self) -> &'s Arc<SchemeStore> {
+        self.scheme_store
     }
 
     #[inline]
-    pub(crate) fn as_definition(&self) -> &'s dyn FunctionDefinition {
-        &*self.scheme.inner.functions[self.index].1
+    pub(crate) fn as_definition(&self) -> MappedRwLockReadGuard<'s, dyn FunctionDefinition> {
+        MappedRwLockReadGuard::map(
+            self.scheme_store.function_at(self.index),
+            |f| f.1.as_ref(),
+        )
     }
 
     /// Converts to an owned [`Function`].
     #[inline]
     pub fn to_owned(&self) -> Function {
         Function {
-            scheme: self.scheme.clone(),
+            scheme_store: self.scheme_store.clone(),
             index: self.index,
         }
     }
 
-    /// Reborrows the function relatively to the specified [`Scheme`] reference.
+    /// Reborrows the function relatively to the specified [`SchemeStore`] reference.
     ///
     /// Useful when you have a [`FunctionRef`] borrowed from an owned [`Function`]
     /// but you need to extend/change it's lifetime.
     ///
-    /// Panics if the function doesn't belong to the specified scheme.
+    /// Panics if the function doesn't belong to the specified scheme store.
     #[inline]
-    pub fn reborrow(self, scheme: &Scheme) -> FunctionRef<'_> {
-        assert!(self.scheme == scheme);
+    pub fn reborrow(self, scheme_store: &Arc<SchemeStore>) -> FunctionRef<'_> {
+        assert!(Arc::ptr_eq(self.scheme_store, scheme_store));
 
         FunctionRef {
-            scheme,
+            scheme_store,
             index: self.index,
         }
     }
@@ -373,7 +379,7 @@ impl PartialEq<Function> for FunctionRef<'_> {
 #[derive(PartialEq, Eq, Clone, Hash)]
 /// A structure to represent a function inside a [`Scheme`](struct@Scheme).
 pub struct Function {
-    scheme: Scheme,
+    scheme_store: Arc<SchemeStore>,
     index: usize,
 }
 
@@ -392,8 +398,11 @@ impl Debug for Function {
 impl Function {
     /// Returns the function's name as recorded in the [`Scheme`](struct@Scheme).
     #[inline]
-    pub fn name(&self) -> &str {
-        &self.scheme.inner.functions[self.index].0
+    pub fn name(&self) -> MappedRwLockReadGuard<'_, str> {
+        MappedRwLockReadGuard::map(
+            self.scheme_store.function_at(self.index),
+            |f| &f.0[..],
+        )
     }
 
     /// Get the function's index in the [`Scheme`](struct@Scheme) identifier's list.
@@ -402,22 +411,25 @@ impl Function {
         self.index
     }
 
-    /// Returns the [`Scheme`](struct@Scheme) to which this function belongs to.
+    /// Returns the [`SchemeStore`](struct@SchemeStore) to which this function belongs to.
     #[inline]
-    pub fn scheme(&self) -> &Scheme {
-        &self.scheme
+    pub fn scheme_store(&self) -> &Arc<SchemeStore> {
+        &self.scheme_store
     }
 
     #[inline]
-    pub(crate) fn as_definition(&self) -> &dyn FunctionDefinition {
-        &*self.scheme.inner.functions[self.index].1
+    pub(crate) fn as_definition(&self) -> MappedRwLockReadGuard<'_, dyn FunctionDefinition> {
+        MappedRwLockReadGuard::map(
+            self.scheme_store.function_at(self.index),
+            |f| f.1.as_ref(),
+        )
     }
 
-    /// Converts to a borrowed [`Function`].
+    /// Converts to a borrowed [`FunctionRef`].
     #[inline]
     pub fn as_ref(&self) -> FunctionRef<'_> {
         FunctionRef {
-            scheme: &self.scheme,
+            scheme_store: &self.scheme_store,
             index: self.index,
         }
     }
@@ -524,7 +536,7 @@ enum SchemeItem {
 /// See [`Scheme::get_list`](struct.Scheme.html#method.get_list).
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub struct ListRef<'s> {
-    scheme: &'s Scheme,
+    scheme_store: &'s Arc<SchemeStore>,
     index: usize,
 }
 
@@ -533,35 +545,33 @@ impl<'s> ListRef<'s> {
         self.index
     }
 
-    pub(crate) fn scheme(&self) -> &'s Scheme {
-        self.scheme
+    pub(crate) fn scheme_store(&self) -> &'s Arc<SchemeStore> {
+        self.scheme_store
     }
 
-    pub(crate) fn definition(&self) -> &'s dyn ListDefinition {
-        &*self.scheme.inner.lists[self.index].1
+    pub(crate) fn definition(&self) -> MappedRwLockReadGuard<'s, dyn ListDefinition> {
+        MappedRwLockReadGuard::map(
+            self.scheme_store.list_at(self.index),
+            |f| f.1.as_ref(),
+        )
     }
 
     /// Converts to an owned [`List`].
     #[inline]
     pub fn to_owned(&self) -> List {
         List {
-            scheme: self.scheme.clone(),
+            scheme_store: self.scheme_store.clone(),
             index: self.index,
         }
     }
 
-    /// Reborrows the list relatively to the specified [`Scheme`] reference.
-    ///
-    /// Useful when you have a [`ListRef`] borrowed from an owned [`List`]
-    /// but you need to extend/change it's lifetime.
-    ///
-    /// Panics if the list doesn't belong to the specified scheme.
+    /// Reborrows the list relatively to the specified [`SchemeStore`] reference.
     #[inline]
-    pub fn reborrow(self, scheme: &Scheme) -> ListRef<'_> {
-        assert!(self.scheme == scheme);
+    pub fn reborrow(self, scheme_store: &Arc<SchemeStore>) -> ListRef<'_> {
+        assert!(Arc::ptr_eq(self.scheme_store, scheme_store));
 
         ListRef {
-            scheme,
+            scheme_store,
             index: self.index,
         }
     }
@@ -569,14 +579,16 @@ impl<'s> ListRef<'s> {
 
 impl Debug for ListRef<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.scheme.inner.lists[self.index])
+        let list = self.scheme_store.list_at(self.index);
+        write!(f, "{:?}", &*list)
     }
 }
 
 impl GetType for ListRef<'_> {
     #[inline]
     fn get_type(&self) -> Type {
-        self.scheme.inner.lists[self.index].0
+        let list = self.scheme_store.list_at(self.index);
+        list.0
     }
 }
 
@@ -592,7 +604,7 @@ impl PartialEq<List> for ListRef<'_> {
 /// See [`Scheme::get_list`](struct.Scheme.html#method.get_list).
 #[derive(PartialEq, Eq, Clone, Hash)]
 pub struct List {
-    scheme: Scheme,
+    scheme_store: Arc<SchemeStore>,
     index: usize,
 }
 
@@ -603,15 +615,15 @@ impl List {
     }
 
     #[inline]
-    pub(crate) fn scheme(&self) -> &Scheme {
-        &self.scheme
+    pub(crate) fn scheme_store(&self) -> &Arc<SchemeStore> {
+        &self.scheme_store
     }
 
     /// Converts to a borrowed [`ListRef`].
     #[inline]
     pub fn as_ref(&self) -> ListRef<'_> {
         ListRef {
-            scheme: &self.scheme,
+            scheme_store: &self.scheme_store,
             index: self.index,
         }
     }
@@ -619,14 +631,16 @@ impl List {
 
 impl Debug for List {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.scheme.inner.lists[self.index])
+        let list = self.scheme_store.list_at(self.index);
+        write!(f, "{:?}", &*list)
     }
 }
 
 impl GetType for List {
     #[inline]
     fn get_type(&self) -> Type {
-        self.scheme.inner.lists[self.index].0
+        let list = self.scheme_store.list_at(self.index);
+        list.0
     }
 }
 
@@ -672,21 +686,25 @@ impl FieldDefinition {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct FieldDefinitionsInner {
+#[derive(Debug)]
+pub(crate) struct SchemeStoreInner {
     pub(crate) fields: Vec<FieldDefinition>,
     pub(crate) field_names: HashMap<Arc<str>, usize, FnvBuildHasher>,
+    pub(crate) functions: Vec<(IdentifierName, Box<dyn FunctionDefinition>)>,
+    pub(crate) function_names: HashMap<Arc<str>, usize, FnvBuildHasher>,
+    pub(crate) lists: Vec<(Type, Box<dyn ListDefinition>)>,
+    pub(crate) list_types: HashMap<Type, usize, FnvBuildHasher>,
     pub(crate) next_scheme_id: u64,
 }
 
 /// A shared collection of field definitions that can be referenced by multiple schemes.
 #[derive(Debug)]
-pub struct FieldDefinitions {
-    inner: RwLock<FieldDefinitionsInner>,
+pub struct SchemeStore {
+    inner: RwLock<SchemeStoreInner>,
     nil_not_equal_is_false: bool,
 }
 
-impl PartialEq for FieldDefinitions {
+impl PartialEq for SchemeStore {
     fn eq(&self, other: &Self) -> bool {
         let a = self.inner.read();
         let b = other.inner.read();
@@ -694,25 +712,29 @@ impl PartialEq for FieldDefinitions {
     }
 }
 
-impl Eq for FieldDefinitions {}
+impl Eq for SchemeStore {}
 
-impl Hash for FieldDefinitions {
+impl Hash for SchemeStore {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.inner.read().fields.hash(state);
         self.nil_not_equal_is_false.hash(state);
     }
 }
 
-impl FieldDefinitions {
-    /// Creates a new empty `FieldDefinitions`.
+impl SchemeStore {
+    /// Creates a new empty `SchemeStore`.
     ///
     /// When `nil_not_equal_is_false` is `true`, comparisons with `nil` values
     /// always return `false` instead of `nil`.
     pub fn new(nil_not_equal_is_false: bool) -> Self {
-        FieldDefinitions {
-            inner: RwLock::new(FieldDefinitionsInner {
+        SchemeStore {
+            inner: RwLock::new(SchemeStoreInner {
                 fields: Vec::new(),
                 field_names: HashMap::default(),
+                functions: Vec::new(),
+                function_names: HashMap::default(),
+                lists: Vec::new(),
+                list_types: HashMap::default(),
                 next_scheme_id: 0,
             }),
             nil_not_equal_is_false,
@@ -793,21 +815,80 @@ impl FieldDefinitions {
         inner.next_scheme_id += 1;
         id
     }
+
+    /// Returns the number of functions registered in this [`SchemeStore`](struct@SchemeStore).
+    pub fn function_count(&self) -> usize {
+        self.inner.read().functions.len()
+    }
+
+    /// Returns the number of lists registered in this [`SchemeStore`](struct@SchemeStore).
+    pub fn list_count(&self) -> usize {
+        self.inner.read().lists.len()
+    }
+
+    pub(crate) fn get_or_add_function(&self, name: Arc<str>, function: Box<dyn FunctionDefinition>) -> Result<usize, IdentifierRedefinitionError> {
+        {
+            let inner = self.inner.read();
+            if let Some(&index) = inner.function_names.get(&name) {
+                return Ok(index);
+            }
+        }
+        let mut inner = self.inner.write();
+        match inner.function_names.get(&name) {
+            Some(_) => Err(IdentifierRedefinitionError::Function(FunctionRedefinitionError(name.to_string()))),
+            None => {
+                let index = inner.functions.len();
+                inner.functions.push((name.clone(), function));
+                inner.function_names.insert(name, index);
+                Ok(index)
+            }
+        }
+    }
+
+    pub(crate) fn get_or_add_list(&self, ty: Type, definition: Box<dyn ListDefinition>) -> Result<usize, ListRedefinitionError> {
+        {
+            let inner = self.inner.read();
+            if let Some(&index) = inner.list_types.get(&ty) {
+                return Ok(index);
+            }
+        }
+        let mut inner = self.inner.write();
+        match inner.list_types.get(&ty) {
+            Some(_) => Err(ListRedefinitionError(ty)),
+            None => {
+                let index = inner.lists.len();
+                inner.lists.push((ty, definition));
+                inner.list_types.insert(ty, index);
+                Ok(index)
+            }
+        }
+    }
+
+    pub(crate) fn function_at(&self, index: usize) -> MappedRwLockReadGuard<'_, (IdentifierName, Box<dyn FunctionDefinition>)> {
+        RwLockReadGuard::try_map(self.inner.read(), |inner| inner.functions.get(index))
+            .unwrap_or_else(|_| panic!("function index {index} out of bounds"))
+    }
+
+    pub(crate) fn list_at(&self, index: usize) -> MappedRwLockReadGuard<'_, (Type, Box<dyn ListDefinition>)> {
+        RwLockReadGuard::try_map(self.inner.read(), |inner| inner.lists.get(index))
+            .unwrap_or_else(|_| panic!("list index {index} out of bounds"))
+    }
+
+    pub(crate) fn list_at_index(&self, ty: &Type) -> Option<usize> {
+        self.inner.read().list_types.get(ty).copied()
+    }
 }
 
 #[derive(Debug)]
 struct SchemeInner {
-    field_definitions: Arc<FieldDefinitions>,
-    functions: Vec<(IdentifierName, Box<dyn FunctionDefinition>)>,
+    scheme_store: Arc<SchemeStore>,
     items: HashMap<IdentifierName, SchemeItem, FnvBuildHasher>,
-    list_types: HashMap<Type, usize, FnvBuildHasher>,
-    lists: Vec<(Type, Box<dyn ListDefinition>)>,
 }
 
 /// A builder for a [`Scheme`].
 #[derive(Default, Debug)]
 pub struct SchemeBuilder {
-    shared_field_definitions: Option<Arc<FieldDefinitions>>,
+    shared_scheme_store: Option<Arc<SchemeStore>>,
     scheme_id: Option<u64>,
     fields: Vec<FieldDefinition>,
     functions: Vec<(IdentifierName, Box<dyn FunctionDefinition>)>,
@@ -825,22 +906,22 @@ impl SchemeBuilder {
         Default::default()
     }
 
-    /// Creates a new scheme builder that shares the given [`FieldDefinitions`].
+    /// Creates a new scheme builder that shares the given [`SchemeStore`].
     ///
     /// The builder will use the same field definitions, allowing multiple
     /// schemes to share field data without duplication.
-    pub fn new_with_field_definitions(field_definitions: Arc<FieldDefinitions>) -> Self {
-        let scheme_id = field_definitions.allocate_scheme_id();
+    pub fn new_with_scheme_store(scheme_store: Arc<SchemeStore>) -> Self {
+        let scheme_id = scheme_store.allocate_scheme_id();
 
         SchemeBuilder {
-            shared_field_definitions: Some(field_definitions.clone()),
+            shared_scheme_store: Some(scheme_store.clone()),
             scheme_id: Some(scheme_id),
             fields: Vec::new(),
             functions: Vec::new(),
             items: HashMap::default(),
             list_types: HashMap::default(),
             lists: Vec::new(),
-            nil_not_equal_is_false: field_definitions.nil_not_equal_is_false,
+            nil_not_equal_is_false: scheme_store.nil_not_equal_is_false,
         }
     }
 
@@ -860,7 +941,7 @@ impl SchemeBuilder {
                 )),
             },
             Entry::Vacant(entry) => {
-                let index = if let Some(ref fd) = self.shared_field_definitions {
+                let index = if let Some(ref fd) = self.shared_scheme_store {
                     let scheme_id = self.scheme_id.unwrap();
                     fd.get_or_add_field(name, ty, optional, scheme_id)?
                 } else {
@@ -913,9 +994,13 @@ impl SchemeBuilder {
                 )),
             },
             Entry::Vacant(entry) => {
-                let index = self.functions.len();
-                self.functions
-                    .push((entry.key().clone(), Box::new(function)));
+                let index = if let Some(ref ss) = self.shared_scheme_store {
+                    ss.get_or_add_function(entry.key().clone(), Box::new(function))?
+                } else {
+                    let index = self.functions.len();
+                    self.functions.push((entry.key().clone(), Box::new(function)));
+                    index
+                };
                 entry.insert(SchemeItem::Function(index));
                 Ok(())
             }
@@ -931,8 +1016,13 @@ impl SchemeBuilder {
         match self.list_types.entry(ty) {
             Entry::Occupied(entry) => Err(ListRedefinitionError(*entry.key())),
             Entry::Vacant(entry) => {
-                let index = self.lists.len();
-                self.lists.push((ty, Box::new(definition)));
+                let index = if let Some(ref ss) = self.shared_scheme_store {
+                    ss.get_or_add_list(ty, Box::new(definition))?
+                } else {
+                    let index = self.lists.len();
+                    self.lists.push((ty, Box::new(definition)));
+                    index
+                };
                 entry.insert(index);
                 Ok(())
             }
@@ -950,7 +1040,7 @@ impl SchemeBuilder {
 
     /// Build a new [`Scheme`] from this builder.
     pub fn build(self) -> Scheme {
-        let field_definitions = if let Some(fd) = self.shared_field_definitions {
+        let scheme_store = if let Some(fd) = self.shared_scheme_store {
             fd
         } else {
             let field_names: HashMap<Arc<str>, usize, FnvBuildHasher> = self.items
@@ -960,10 +1050,21 @@ impl SchemeBuilder {
                     SchemeItem::Function(_) => None,
                 })
                 .collect();
-            Arc::new(FieldDefinitions {
-                inner: RwLock::new(FieldDefinitionsInner {
+            let function_names: HashMap<Arc<str>, usize, FnvBuildHasher> = self.items
+                .iter()
+                .filter_map(|(name, item)| match item {
+                    SchemeItem::Function(index) => Some((name.clone(), *index)),
+                    SchemeItem::Field(_) => None,
+                })
+                .collect();
+            Arc::new(SchemeStore {
+                inner: RwLock::new(SchemeStoreInner {
                     fields: self.fields,
                     field_names,
+                    functions: self.functions,
+                    function_names,
+                    lists: self.lists,
+                    list_types: self.list_types,
                     next_scheme_id: 1,
                 }),
                 nil_not_equal_is_false: self.nil_not_equal_is_false,
@@ -972,11 +1073,8 @@ impl SchemeBuilder {
 
         Scheme {
             inner: Arc::new(SchemeInner {
-                field_definitions,
-                functions: self.functions,
+                scheme_store,
                 items: self.items,
-                list_types: self.list_types,
-                lists: self.lists,
             }),
         }
     }
@@ -1091,12 +1189,12 @@ impl<'s> Scheme {
         self.inner.items.get(name).and_then(|item| match *item {
             SchemeItem::Field(index) => {
                 Some(Identifier::Field(FieldRef {
-                    field_definitions: &self.inner.field_definitions,
+                    scheme_store: &self.inner.scheme_store,
                     index,
                 }))
             }
             SchemeItem::Function(index) => Some(Identifier::Function(FunctionRef {
-                scheme: self,
+                scheme_store: &self.inner.scheme_store,
                 index,
             })),
         })
@@ -1113,7 +1211,7 @@ impl<'s> Scheme {
     /// Iterates over fields registered in the [`scheme`](struct@Scheme).
     #[inline]
     pub fn fields(&'s self) -> impl Iterator<Item = FieldRef<'s>> + 's {
-        let fd = &self.inner.field_definitions;
+        let fd = &self.inner.scheme_store;
         let indices: Vec<usize> = self.inner.items.iter()
             .filter_map(|(_, item)| match item {
                 SchemeItem::Field(index) => Some(*index),
@@ -1121,7 +1219,7 @@ impl<'s> Scheme {
             })
             .collect();
         indices.into_iter().map(move |index| FieldRef {
-            field_definitions: fd,
+            scheme_store: fd,
             index,
         })
     }
@@ -1133,16 +1231,16 @@ impl<'s> Scheme {
     }
 
 
-    /// Returns the [`FieldDefinitions`](struct@FieldDefinitions) shared by this scheme.
+    /// Returns the [`SchemeStore`](struct@SchemeStore) shared by this scheme.
     #[inline]
-    pub fn field_definitions(&self) -> &Arc<FieldDefinitions> {
-        &self.inner.field_definitions
+    pub fn scheme_store(&self) -> &Arc<SchemeStore> {
+        &self.inner.scheme_store
     }
 
     /// Returns the number of functions in the [`scheme`](struct@Scheme).
     #[inline]
     pub fn function_count(&self) -> usize {
-        self.inner.functions.len()
+        self.inner.items.iter().filter(|(_, item)| matches!(item, SchemeItem::Function(_))).count()
     }
 
     /// Returns the [`function`](struct@Function) with the specified `name`.
@@ -1155,9 +1253,16 @@ impl<'s> Scheme {
 
     /// Iterates over functions registered in the [`scheme`](struct@Scheme).
     #[inline]
-    pub fn functions(&'s self) -> impl ExactSizeIterator<Item = FunctionRef<'s>> + 's {
-        (0..self.inner.functions.len()).map(|index| FunctionRef {
-            scheme: self,
+    pub fn functions(&'s self) -> impl Iterator<Item = FunctionRef<'s>> + 's {
+        let ss = &self.inner.scheme_store;
+        let indices: Vec<usize> = self.inner.items.iter()
+            .filter_map(|(_, item)| match item {
+                SchemeItem::Function(index) => Some(*index),
+                SchemeItem::Field(_) => None,
+            })
+            .collect();
+        indices.into_iter().map(move |index| FunctionRef {
+            scheme_store: ss,
             index,
         })
     }
@@ -1185,21 +1290,21 @@ impl<'s> Scheme {
     /// Returns the number of lists in the [`scheme`](struct@Scheme)
     #[inline]
     pub fn list_count(&self) -> usize {
-        self.inner.lists.len()
+        self.inner.scheme_store.list_count()
     }
 
     /// Returns the [`list`](struct.List.html) for a given [`type`](enum.Type.html).
     pub fn get_list(&self, ty: &Type) -> Option<ListRef<'_>> {
-        self.inner.list_types.get(ty).map(move |index| ListRef {
-            scheme: self,
-            index: *index,
+        self.inner.scheme_store.list_at_index(ty).map(move |index| ListRef {
+            scheme_store: &self.inner.scheme_store,
+            index,
         })
     }
 
     /// Iterates over all registered [`lists`](trait.ListDefinition.html).
     pub fn lists(&self) -> impl ExactSizeIterator<Item = ListRef<'_>> + use<'_> {
-        (0..self.inner.lists.len()).map(|index| ListRef {
-            scheme: self,
+        (0..self.inner.scheme_store.list_count()).map(|index| ListRef {
+            scheme_store: &self.inner.scheme_store,
             index,
         })
     }
@@ -1207,7 +1312,7 @@ impl<'s> Scheme {
     /// Returns the nil_not_equal_behavior setting.
     #[inline]
     pub fn nil_not_equal_behavior(&self) -> bool {
-        self.inner.field_definitions.nil_not_equal_behavior()
+        self.inner.scheme_store.nil_not_equal_behavior()
     }
 }
 
@@ -2104,7 +2209,7 @@ fn test_scheme_json_serialization() {
 
     let new_scheme = serde_json::from_str::<Scheme>(&json).unwrap();
 
-    assert_eq!(scheme.inner.field_definitions.field_count(), new_scheme.inner.field_definitions.field_count());
+    assert_eq!(scheme.inner.scheme_store.field_count(), new_scheme.inner.scheme_store.field_count());
 }
 
 #[test]

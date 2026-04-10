@@ -115,7 +115,7 @@ pub use self::rhs_types::{
     RegexError, RegexExpr, RegexFormat, RegexProvider,
 };
 pub use self::scheme::{
-    Field, FieldDefinitions, FieldIndex, FieldRedefinitionError, FieldRef, Function, FunctionRedefinitionError,
+    Field, SchemeStore, FieldIndex, FieldRedefinitionError, FieldRef, Function, FunctionRedefinitionError,
     FunctionRef, IdentifierRedefinitionError, IndexAccessError, List, ListRef, Scheme,
     SchemeBuilder, SchemeMismatchError, UnknownFieldError,
 };
