@@ -9,6 +9,7 @@ use serde::de::Visitor;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Formatter};
@@ -695,20 +696,20 @@ pub(crate) struct SchemeStoreInner {
     pub(crate) lists: Vec<(Type, Box<dyn ListDefinition>)>,
     pub(crate) list_types: HashMap<Type, usize, FnvBuildHasher>,
     pub(crate) next_scheme_id: u64,
+    pub(crate) nil_not_equal_is_false: bool,
 }
 
 /// A shared collection of field definitions that can be referenced by multiple schemes.
 #[derive(Debug)]
 pub struct SchemeStore {
     inner: RwLock<SchemeStoreInner>,
-    nil_not_equal_is_false: bool,
 }
 
 impl PartialEq for SchemeStore {
     fn eq(&self, other: &Self) -> bool {
         let a = self.inner.read();
         let b = other.inner.read();
-        a.fields == b.fields && self.nil_not_equal_is_false == other.nil_not_equal_is_false
+        a.fields == b.fields && a.nil_not_equal_is_false == b.nil_not_equal_is_false
     }
 }
 
@@ -716,8 +717,9 @@ impl Eq for SchemeStore {}
 
 impl Hash for SchemeStore {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.inner.read().fields.hash(state);
-        self.nil_not_equal_is_false.hash(state);
+        let inner = self.inner.read();
+        inner.fields.hash(state);
+        inner.nil_not_equal_is_false.hash(state);
     }
 }
 
@@ -736,8 +738,8 @@ impl SchemeStore {
                 lists: Vec::new(),
                 list_types: HashMap::default(),
                 next_scheme_id: 0,
+                nil_not_equal_is_false,
             }),
-            nil_not_equal_is_false,
         }
     }
 
@@ -769,7 +771,11 @@ impl SchemeStore {
     /// Returns the nil_not_equal_behavior setting.
     #[inline]
     pub(crate) fn nil_not_equal_behavior(&self) -> bool {
-        !self.nil_not_equal_is_false
+        !self.inner.read().nil_not_equal_is_false
+    }
+
+    pub(crate) fn set_nil_not_equal_is_false(&self, value: bool) {
+        self.inner.write().nil_not_equal_is_false = value;
     }
 
     /// Adds a field definition internally via write lock.
@@ -886,24 +892,25 @@ struct SchemeInner {
 }
 
 /// A builder for a [`Scheme`].
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct SchemeBuilder {
-    shared_scheme_store: Option<Arc<SchemeStore>>,
-    scheme_id: Option<u64>,
-    fields: Vec<FieldDefinition>,
-    functions: Vec<(IdentifierName, Box<dyn FunctionDefinition>)>,
+    scheme_store: Arc<SchemeStore>,
+    scheme_id: u64,
     items: HashMap<IdentifierName, SchemeItem, FnvBuildHasher>,
-
-    list_types: HashMap<Type, usize, FnvBuildHasher>,
-    lists: Vec<(Type, Box<dyn ListDefinition>)>,
-
-    nil_not_equal_is_false: bool,
+    list_types: HashSet<Type>,
 }
 
 impl SchemeBuilder {
     /// Creates a new scheme.
     pub fn new() -> Self {
-        Default::default()
+        let scheme_store = Arc::new(SchemeStore::new(false));
+        let scheme_id = scheme_store.allocate_scheme_id();
+        SchemeBuilder {
+            scheme_store,
+            scheme_id,
+            items: HashMap::default(),
+            list_types: HashSet::new(),
+        }
     }
 
     /// Creates a new scheme builder that shares the given [`SchemeStore`].
@@ -914,14 +921,10 @@ impl SchemeBuilder {
         let scheme_id = scheme_store.allocate_scheme_id();
 
         SchemeBuilder {
-            shared_scheme_store: Some(scheme_store.clone()),
-            scheme_id: Some(scheme_id),
-            fields: Vec::new(),
-            functions: Vec::new(),
+            scheme_store,
+            scheme_id,
             items: HashMap::default(),
-            list_types: HashMap::default(),
-            lists: Vec::new(),
-            nil_not_equal_is_false: scheme_store.nil_not_equal_is_false,
+            list_types: HashSet::new(),
         }
     }
 
@@ -941,19 +944,7 @@ impl SchemeBuilder {
                 )),
             },
             Entry::Vacant(entry) => {
-                let index = if let Some(ref fd) = self.shared_scheme_store {
-                    let scheme_id = self.scheme_id.unwrap();
-                    fd.get_or_add_field(name, ty, optional, scheme_id)?
-                } else {
-                    let index = self.fields.len();
-                    self.fields.push(FieldDefinition {
-                        name: entry.key().clone(),
-                        ty,
-                        optional,
-                        scheme_id: 0,
-                    });
-                    index
-                };
+                let index = self.scheme_store.get_or_add_field(name, ty, optional, self.scheme_id)?;
                 entry.insert(SchemeItem::Field(index));
                 Ok(())
             }
@@ -994,13 +985,7 @@ impl SchemeBuilder {
                 )),
             },
             Entry::Vacant(entry) => {
-                let index = if let Some(ref ss) = self.shared_scheme_store {
-                    ss.get_or_add_function(entry.key().clone(), Box::new(function))?
-                } else {
-                    let index = self.functions.len();
-                    self.functions.push((entry.key().clone(), Box::new(function)));
-                    index
-                };
+                let index = self.scheme_store.get_or_add_function(entry.key().clone(), Box::new(function))?;
                 entry.insert(SchemeItem::Function(index));
                 Ok(())
             }
@@ -1013,20 +998,12 @@ impl SchemeBuilder {
         ty: Type,
         definition: impl ListDefinition + 'static,
     ) -> Result<(), ListRedefinitionError> {
-        match self.list_types.entry(ty) {
-            Entry::Occupied(entry) => Err(ListRedefinitionError(*entry.key())),
-            Entry::Vacant(entry) => {
-                let index = if let Some(ref ss) = self.shared_scheme_store {
-                    ss.get_or_add_list(ty, Box::new(definition))?
-                } else {
-                    let index = self.lists.len();
-                    self.lists.push((ty, Box::new(definition)));
-                    index
-                };
-                entry.insert(index);
-                Ok(())
-            }
+        if self.list_types.contains(&ty) {
+            return Err(ListRedefinitionError(ty));
         }
+        self.scheme_store.get_or_add_list(ty, Box::new(definition))?;
+        self.list_types.insert(ty);
+        Ok(())
     }
 
     /// Configures the behavior of not equal comparison against a nil value.
@@ -1035,48 +1012,23 @@ impl SchemeBuilder {
     /// By calling this method with `false`, this behavior can be
     /// changed so that `nil != <value>` returns `false` instead.
     pub fn set_nil_not_equal_behavior(&mut self, behavior: bool) {
-        self.nil_not_equal_is_false = !behavior;
+        self.scheme_store.set_nil_not_equal_is_false(!behavior);
     }
 
     /// Build a new [`Scheme`] from this builder.
     pub fn build(self) -> Scheme {
-        let scheme_store = if let Some(fd) = self.shared_scheme_store {
-            fd
-        } else {
-            let field_names: HashMap<Arc<str>, usize, FnvBuildHasher> = self.items
-                .iter()
-                .filter_map(|(name, item)| match item {
-                    SchemeItem::Field(index) => Some((name.clone(), *index)),
-                    SchemeItem::Function(_) => None,
-                })
-                .collect();
-            let function_names: HashMap<Arc<str>, usize, FnvBuildHasher> = self.items
-                .iter()
-                .filter_map(|(name, item)| match item {
-                    SchemeItem::Function(index) => Some((name.clone(), *index)),
-                    SchemeItem::Field(_) => None,
-                })
-                .collect();
-            Arc::new(SchemeStore {
-                inner: RwLock::new(SchemeStoreInner {
-                    fields: self.fields,
-                    field_names,
-                    functions: self.functions,
-                    function_names,
-                    lists: self.lists,
-                    list_types: self.list_types,
-                    next_scheme_id: 1,
-                }),
-                nil_not_equal_is_false: self.nil_not_equal_is_false,
-            })
-        };
-
         Scheme {
             inner: Arc::new(SchemeInner {
-                scheme_store,
+                scheme_store: self.scheme_store,
                 items: self.items,
             }),
         }
+    }
+}
+
+impl Default for SchemeBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
